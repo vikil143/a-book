@@ -11,6 +11,7 @@ import {
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
+import LocalPdfReader from "./src/LocalPdfReader"
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
@@ -18,7 +19,7 @@ function App() {
   return (
     <SafeAreaProvider>
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
+      <LocalPdfReader />
     </SafeAreaProvider>
   );
 }
