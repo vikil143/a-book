@@ -4,20 +4,25 @@ import {
   FlatList,
   LayoutChangeEvent,
   Modal,
-  PanResponder,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import Pdf from "react-native-pdf";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import type { RootStackParamList } from "../navigation/RootNavigator";
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerGestureEvent,
+  type PanGestureHandlerStateChangeEvent,
+} from "react-native-gesture-handler";
+import Pdf from "react-native-pdf";
 import { getDB } from "../db";
-import { uid } from "../utils/files";
-import HighlightLayer, { type HighlightColor, type HighlightRow } from "./components/HighlightLayer";
+import type { RootStackParamList } from "../navigation/RootNavigator";
 import HighlightActionsModal from "./components/HighlightActionsModal";
+import HighlightLayer, { type HighlightColor, type HighlightRow } from "./components/HighlightLayer";
+import { uid } from "../utils/files";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Reader">;
 
@@ -30,7 +35,6 @@ type NoteRow = {
   highlight_id: string | null;
 };
 
-type Point = { x: number; y: number };
 type RectPx = { x: number; y: number; w: number; h: number };
 
 const MIN_RECT_SIZE_PX = 8;
@@ -39,17 +43,15 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function normalizeRect(start: Point, end: Point, containerWidth: number, containerHeight: number): RectPx {
-  const sx = clamp(start.x, 0, containerWidth);
-  const sy = clamp(start.y, 0, containerHeight);
-  const ex = clamp(end.x, 0, containerWidth);
-  const ey = clamp(end.y, 0, containerHeight);
-
+function normalizeRectPx(startX: number, startY: number, endX: number, endY: number, containerWidth: number, containerHeight: number): RectPx {
+  const sx = clamp(startX, 0, containerWidth);
+  const sy = clamp(startY, 0, containerHeight);
+  const ex = clamp(endX, 0, containerWidth);
+  const ey = clamp(endY, 0, containerHeight);
   const x = Math.min(sx, ex);
   const y = Math.min(sy, ey);
   const w = Math.abs(ex - sx);
   const h = Math.abs(ey - sy);
-
   return { x, y, w, h };
 }
 
@@ -63,20 +65,21 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   const [book, setBook] = useState<BookRow | null>(null);
   const [page, setPage] = useState<number>(1);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [notes, setNotes] = useState<NoteRow[]>([]);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState("");
 
   const [highlightMode, setHighlightMode] = useState(false);
-  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [previewRect, setPreviewRect] = useState<RectPx | null>(null);
-  const dragStartRef = useRef<Point | null>(null);
-
   const [highlights, setHighlights] = useState<HighlightRow[]>([]);
   const [selectedHighlight, setSelectedHighlight] = useState<HighlightRow | null>(null);
   const [linkedNoteId, setLinkedNoteId] = useState<string | null>(null);
   const [linkedNoteText, setLinkedNoteText] = useState("");
+  const drawStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const source = useMemo(() => {
     if (!book) return null;
@@ -103,8 +106,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     const rows = res[0].rows;
     const list: NoteRow[] = [];
     for (let i = 0; i < rows.length; i++) {
-      const row = rows.item(i) as NoteRow;
-      list.push(row);
+      list.push(rows.item(i) as NoteRow);
     }
     setNotes(list);
   }, [bookId]);
@@ -121,10 +123,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       const list: HighlightRow[] = [];
       for (let i = 0; i < rows.length; i++) {
         const row = rows.item(i) as HighlightRow;
-        list.push({
-          ...row,
-          color: toHighlightColor(row.color),
-        });
+        list.push({ ...row, color: toHighlightColor(row.color) });
       }
       setHighlights(list);
     },
@@ -140,8 +139,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     loadHighlightsForPage(page).catch(console.log);
     setSelectedHighlight((prev) => {
       if (!prev) return null;
-      if (prev.page_number !== page) return null;
-      return prev;
+      return prev.page_number === page ? prev : null;
     });
   }, [loadHighlightsForPage, page]);
 
@@ -163,8 +161,37 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const deleteNote = async (id: string) => {
     const db = await getDB();
     await db.executeSql("DELETE FROM notes WHERE id = ?", [id]);
+    if (editingNoteId === id) {
+      setEditingNoteId(null);
+      setEditingNoteText("");
+    }
     await loadNotes();
   };
+
+  const startEditNote = useCallback((note: NoteRow) => {
+    setEditingNoteId(note.id);
+    setEditingNoteText(note.content);
+  }, []);
+
+  const cancelEditNote = useCallback(() => {
+    setEditingNoteId(null);
+    setEditingNoteText("");
+  }, []);
+
+  const saveEditedNote = useCallback(async () => {
+    if (!editingNoteId) return;
+    const nextContent = editingNoteText.trim();
+    if (!nextContent) {
+      Alert.alert("Note is empty", "Add text or delete this note.");
+      return;
+    }
+    const now = Date.now();
+    const db = await getDB();
+    await db.executeSql("UPDATE notes SET content = ?, updated_at = ? WHERE id = ?", [nextContent, now, editingNoteId]);
+    setEditingNoteId(null);
+    setEditingNoteText("");
+    await loadNotes();
+  }, [editingNoteId, editingNoteText, loadNotes]);
 
   const saveHighlight = useCallback(
     async (rect: RectPx) => {
@@ -175,10 +202,10 @@ export default function ReaderScreen({ route, navigation }: Props) {
       const y = clamp(rect.y / containerSize.height, 0, 1);
       const w = clamp(rect.w / containerSize.width, 0, 1);
       const h = clamp(rect.h / containerSize.height, 0, 1);
+      if (w <= 0 || h <= 0) return;
 
       const now = Date.now();
       const db = await getDB();
-
       await db.executeSql(
         "INSERT INTO highlights (id, book_id, page_number, x, y, w, h, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [uid(), bookId, page, x, y, w, h, "yellow", now, now]
@@ -189,72 +216,71 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [bookId, containerSize.height, containerSize.width, loadHighlightsForPage, page]
   );
 
-  const finishDrawing = useCallback(
-    (endPoint: Point) => {
-      const start = dragStartRef.current;
-      dragStartRef.current = null;
-
-      if (!start || !containerSize.width || !containerSize.height) {
-        setPreviewRect(null);
-        return;
-      }
-
-      const rect = normalizeRect(start, endPoint, containerSize.width, containerSize.height);
-      setPreviewRect(null);
+  const finishDraw = useCallback(
+    (startX: number, startY: number, endX: number, endY: number) => {
+      if (!containerSize.width || !containerSize.height) return;
+      const rect = normalizeRectPx(startX, startY, endX, endY, containerSize.width, containerSize.height);
       saveHighlight(rect).catch((e) => console.log("save highlight error", e));
     },
     [containerSize.height, containerSize.width, saveHighlight]
   );
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => highlightMode,
-        onMoveShouldSetPanResponder: () => highlightMode,
-        onPanResponderGrant: (evt) => {
-          if (!highlightMode) return;
-          const start = {
-            x: clamp(evt.nativeEvent.locationX, 0, containerSize.width),
-            y: clamp(evt.nativeEvent.locationY, 0, containerSize.height),
-          };
-          dragStartRef.current = start;
-          setPreviewRect({ x: start.x, y: start.y, w: 0, h: 0 });
-        },
-        onPanResponderMove: (evt) => {
-          const start = dragStartRef.current;
-          if (!highlightMode || !start) return;
+  const resetDrawPreview = useCallback(() => {
+    drawStartRef.current = null;
+    setPreviewRect(null);
+  }, []);
 
-          const current = {
-            x: clamp(evt.nativeEvent.locationX, 0, containerSize.width),
-            y: clamp(evt.nativeEvent.locationY, 0, containerSize.height),
-          };
+  const onDrawGestureEvent = useCallback(
+    (event: PanGestureHandlerGestureEvent) => {
+      if (!highlightMode || !containerSize.width || !containerSize.height) return;
+      const start = drawStartRef.current;
+      if (!start) return;
+      const currentX = clamp(event.nativeEvent.x, 0, containerSize.width);
+      const currentY = clamp(event.nativeEvent.y, 0, containerSize.height);
+      setPreviewRect(normalizeRectPx(start.x, start.y, currentX, currentY, containerSize.width, containerSize.height));
+    },
+    [containerSize.height, containerSize.width, highlightMode]
+  );
 
-          const rect = normalizeRect(start, current, containerSize.width, containerSize.height);
-          setPreviewRect(rect);
-        },
-        onPanResponderRelease: (evt) => {
-          if (!highlightMode) return;
-          finishDrawing({
-            x: clamp(evt.nativeEvent.locationX, 0, containerSize.width),
-            y: clamp(evt.nativeEvent.locationY, 0, containerSize.height),
-          });
-        },
-        onPanResponderTerminate: (evt) => {
-          if (!highlightMode) return;
-          finishDrawing({
-            x: clamp(evt.nativeEvent.locationX, 0, containerSize.width),
-            y: clamp(evt.nativeEvent.locationY, 0, containerSize.height),
-          });
-        },
-      }),
-    [containerSize.height, containerSize.width, finishDrawing, highlightMode]
+  const onDrawHandlerStateChange = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      if (!highlightMode || !containerSize.width || !containerSize.height) return;
+      const { state, x, y } = event.nativeEvent;
+      const clampedX = clamp(x, 0, containerSize.width);
+      const clampedY = clamp(y, 0, containerSize.height);
+
+      if (state === State.BEGAN) {
+        drawStartRef.current = { x: clampedX, y: clampedY };
+        setPreviewRect({ x: clampedX, y: clampedY, w: 0, h: 0 });
+        return;
+      }
+
+      if (state === State.ACTIVE) {
+        const start = drawStartRef.current;
+        if (!start) return;
+        setPreviewRect(normalizeRectPx(start.x, start.y, clampedX, clampedY, containerSize.width, containerSize.height));
+        return;
+      }
+
+      if (state === State.END) {
+        const start = drawStartRef.current;
+        if (!start) return;
+        finishDraw(start.x, start.y, clampedX, clampedY);
+        resetDrawPreview();
+        return;
+      }
+
+      if (state === State.CANCELLED || state === State.FAILED) {
+        resetDrawPreview();
+      }
+    },
+    [containerSize.height, containerSize.width, finishDraw, highlightMode, resetDrawPreview]
   );
 
   const loadLinkedNote = useCallback(async (highlightId: string) => {
     const db = await getDB();
     const res = await db.executeSql("SELECT id, content FROM notes WHERE highlight_id = ? LIMIT 1", [highlightId]);
     const row = res[0].rows.length ? (res[0].rows.item(0) as { id: string; content: string }) : null;
-
     setLinkedNoteId(row?.id ?? null);
     setLinkedNoteText(row?.content ?? "");
   }, []);
@@ -290,10 +316,12 @@ export default function ReaderScreen({ route, navigation }: Props) {
     }
 
     if (linkedNoteId) {
-      await db.executeSql(
-        "UPDATE notes SET content = ?, page_number = ?, updated_at = ? WHERE id = ?",
-        [content, selectedHighlight.page_number, now, linkedNoteId]
-      );
+      await db.executeSql("UPDATE notes SET content = ?, page_number = ?, updated_at = ? WHERE id = ?", [
+        content,
+        selectedHighlight.page_number,
+        now,
+        linkedNoteId,
+      ]);
     } else {
       const newId = uid();
       await db.executeSql(
@@ -308,11 +336,9 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   const deleteHighlight = useCallback(async () => {
     if (!selectedHighlight) return;
-
     const db = await getDB();
     await db.executeSql("DELETE FROM highlights WHERE id = ?", [selectedHighlight.id]);
     await db.executeSql("DELETE FROM notes WHERE highlight_id = ?", [selectedHighlight.id]);
-
     closeHighlightActions();
     await loadHighlightsForPage(page);
     if (drawerOpen) await loadNotes();
@@ -371,29 +397,28 @@ export default function ReaderScreen({ route, navigation }: Props) {
             pointerEvents="none"
             style={[
               styles.previewRect,
-              {
-                left: previewRect.x,
-                top: previewRect.y,
-                width: previewRect.w,
-                height: previewRect.h,
-              },
+              { left: previewRect.x, top: previewRect.y, width: previewRect.w, height: previewRect.h },
             ]}
           />
         ) : null}
 
-        <View
-          style={StyleSheet.absoluteFillObject}
-          pointerEvents={highlightMode ? "auto" : "none"}
-          {...panResponder.panHandlers}
-        />
+        <PanGestureHandler
+          enabled={highlightMode}
+          onGestureEvent={onDrawGestureEvent}
+          onHandlerStateChange={onDrawHandlerStateChange}
+        >
+          <View style={StyleSheet.absoluteFillObject} pointerEvents={highlightMode ? "auto" : "none"} />
+        </PanGestureHandler>
       </View>
 
       <TouchableOpacity
         style={[styles.modeFab, highlightMode ? styles.modeFabOn : null]}
         onPress={() => {
-          setHighlightMode((prev) => !prev);
-          setPreviewRect(null);
-          dragStartRef.current = null;
+          setHighlightMode((prev) => {
+            const next = !prev;
+            if (!next) resetDrawPreview();
+            return next;
+          });
         }}
       >
         <Text style={[styles.modeFabText, highlightMode ? styles.modeFabTextOn : null]}>
@@ -432,18 +457,48 @@ export default function ReaderScreen({ route, navigation }: Props) {
               data={notes}
               keyExtractor={(n) => n.id}
               ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-              renderItem={({ item }) => (
-                <View style={styles.noteCard}>
-                  <Text style={styles.noteMeta}>
-                    Page {item.page_number}
-                    {item.highlight_id ? " • linked" : ""}
-                  </Text>
-                  <Text style={styles.noteText}>{item.content}</Text>
-                  <TouchableOpacity onPress={() => deleteNote(item.id)} style={styles.deleteBtn}>
-                    <Text style={styles.deleteBtnText}>Delete</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+              renderItem={({ item }) => {
+                const isEditing = editingNoteId === item.id;
+                return (
+                  <View style={styles.noteCard}>
+                    <Text style={styles.noteMeta}>
+                      Page {item.page_number} • {item.highlight_id ? "Highlight note" : "Page note"}
+                    </Text>
+
+                    {isEditing ? (
+                      <TextInput
+                        value={editingNoteText}
+                        onChangeText={setEditingNoteText}
+                        multiline
+                        style={styles.noteEditInput}
+                      />
+                    ) : (
+                      <Text style={styles.noteText}>{item.content}</Text>
+                    )}
+
+                    <View style={styles.noteActions}>
+                      {isEditing ? (
+                        <>
+                          <TouchableOpacity onPress={() => saveEditedNote().catch(console.log)}>
+                            <Text style={styles.editBtnText}>Save</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={cancelEditNote}>
+                            <Text style={styles.editBtnText}>Cancel</Text>
+                          </TouchableOpacity>
+                        </>
+                      ) : (
+                        <TouchableOpacity onPress={() => startEditNote(item)}>
+                          <Text style={styles.editBtnText}>Edit</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      <TouchableOpacity onPress={() => deleteNote(item.id)}>
+                        <Text style={styles.deleteBtnText}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              }}
               ListEmptyComponent={<Text style={styles.emptyStateText}>No notes yet.</Text>}
             />
           </View>
@@ -534,7 +589,23 @@ const styles = StyleSheet.create({
   noteCard: { borderWidth: 1, borderColor: "#eee", borderRadius: 12, padding: 12 },
   noteMeta: { fontSize: 12, color: "#666" },
   noteText: { marginTop: 6, fontSize: 14 },
-  deleteBtn: { marginTop: 10, alignSelf: "flex-start" },
+  noteEditInput: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#e5e5e5",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minHeight: 56,
+    textAlignVertical: "top",
+  },
+  noteActions: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 14,
+    alignItems: "center",
+  },
+  editBtnText: { color: "#0057b8", fontWeight: "700" },
   deleteBtnText: { color: "#a00", fontWeight: "700" },
   emptyStateText: { color: "#666", marginTop: 12 },
 });
