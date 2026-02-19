@@ -11,15 +11,18 @@ import {
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import LocalPdfReader from "./src/LocalPdfReader"
+import { NavigationContainer } from "@react-navigation/native"
+import RootNavigator from './src/navigation/RootNavigator';
 
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <LocalPdfReader />
+      <NavigationContainer>
+        <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
+        <RootNavigator />
+      </NavigationContainer>
     </SafeAreaProvider>
   );
 }
