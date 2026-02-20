@@ -70,7 +70,7 @@ const TopToolbar = React.memo(function TopToolbar({
         </View>
 
         <View style={styles.actions}>
-          <ToolbarButton label="HL" active={highlightMode} onPress={onToggleHighlight} />
+          <ToolbarButton label="Highlight" active={highlightMode} onPress={onToggleHighlight} />
           <ToolbarButton label="Pen" active={penMode} onPress={onTogglePen} />
           <ToolbarButton label="Mark" active={isBookmarked} onPress={onToggleBookmark} />
           <ToolbarButton label="Topics" onPress={onPressTopics} />

@@ -55,6 +55,7 @@ export async function initDB() {
       w REAL NOT NULL CHECK (w >= 0 AND w <= 1),
       h REAL NOT NULL CHECK (h >= 0 AND h <= 1),
       color TEXT NOT NULL DEFAULT 'yellow',
+      topic_id TEXT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE

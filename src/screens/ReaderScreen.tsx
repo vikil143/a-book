@@ -16,7 +16,7 @@ import {
   type PanGestureHandlerGestureEvent,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
-import { useSharedValue } from "react-native-reanimated";
+import Animated, { useAnimatedStyle, useSharedValue } from "react-native-reanimated";
 import { getDB } from "../db";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import { uid } from "../utils/files";
@@ -118,6 +118,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeStrokeSv = useSharedValue<LiveStroke | null>(null);
+  const previewRectXSv = useSharedValue(0);
+  const previewRectYSv = useSharedValue(0);
+  const previewRectWSv = useSharedValue(0);
+  const previewRectHSv = useSharedValue(0);
+  const previewRectVisibleSv = useSharedValue(0);
 
   const [book, setBook] = useState<BookRow | null>(null);
   const [page, setPage] = useState(1);
@@ -136,7 +141,6 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [topics, setTopics] = useState<ReaderTopic[]>([]);
   const [bookmarks, setBookmarks] = useState<number[]>([]);
 
-  const [previewRect, setPreviewRect] = useState<RectPx | null>(null);
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
   const [activeGlowHighlightId, setActiveGlowHighlightId] = useState<string | null>(null);
@@ -230,6 +234,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
   }, [strokes, visibleTopicMap]);
 
   const isBookmarked = useMemo(() => bookmarks.includes(page), [bookmarks, page]);
+
+  const previewRectAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: previewRectVisibleSv.value,
+    transform: [{ translateX: previewRectXSv.value }, { translateY: previewRectYSv.value }],
+    width: previewRectWSv.value,
+    height: previewRectHSv.value,
+  }));
 
   const resetToolbarTimer = useCallback((ms = 3200) => {
     if (toolbarTimerRef.current) clearTimeout(toolbarTimerRef.current);
@@ -559,9 +570,22 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const resetDrawPreview = useCallback(() => {
     drawStartRef.current = null;
     strokeDraftRef.current = [];
-    setPreviewRect(null);
+    previewRectVisibleSv.value = 0;
+    previewRectWSv.value = 0;
+    previewRectHSv.value = 0;
     activeStrokeSv.value = null;
-  }, [activeStrokeSv]);
+  }, [activeStrokeSv, previewRectHSv, previewRectVisibleSv, previewRectWSv]);
+
+  const setPreviewRectShared = useCallback(
+    (rect: RectPx) => {
+      previewRectXSv.value = rect.x;
+      previewRectYSv.value = rect.y;
+      previewRectWSv.value = rect.w;
+      previewRectHSv.value = rect.h;
+      previewRectVisibleSv.value = rect.w >= MIN_RECT_SIZE_PX && rect.h >= MIN_RECT_SIZE_PX ? 1 : 0;
+    },
+    [previewRectHSv, previewRectVisibleSv, previewRectWSv, previewRectXSv, previewRectYSv]
+  );
 
   const pushLiveStrokePreview = useCallback(
     (nextMode: Mode, points: DraftStrokePoint[]) => {
@@ -622,7 +646,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       if (mode === "highlight") {
         const start = drawStartRef.current;
         if (!start) return;
-        setPreviewRect(normalizeRectPx(start.x, start.y, current.x, current.y, containerSize.width, containerSize.height));
+        setPreviewRectShared(normalizeRectPx(start.x, start.y, current.x, current.y, containerSize.width, containerSize.height));
         return;
       }
 
@@ -650,7 +674,17 @@ export default function ReaderScreen({ route, navigation }: Props) {
         pushLiveStrokePreview(mode, next);
       }
     },
-    [appendStrokePoint, containerSize.height, containerSize.width, drawEnabled, mode, pushLiveStrokePreview, resetDrawPreview, toolStyles]
+    [
+      appendStrokePoint,
+      containerSize.height,
+      containerSize.width,
+      drawEnabled,
+      mode,
+      pushLiveStrokePreview,
+      resetDrawPreview,
+      setPreviewRectShared,
+      toolStyles,
+    ]
   );
 
   const onDrawHandlerStateChange = useCallback(
@@ -672,7 +706,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       if (state === State.BEGAN) {
         if (mode === "highlight") {
           drawStartRef.current = point;
-          setPreviewRect({ x: point.x, y: point.y, w: 0, h: 0 });
+          setPreviewRectShared({ x: point.x, y: point.y, w: 0, h: 0 });
           return;
         }
 
@@ -701,7 +735,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         if (mode === "highlight") {
           const start = drawStartRef.current;
           if (!start) return;
-          setPreviewRect(normalizeRectPx(start.x, start.y, point.x, point.y, containerSize.width, containerSize.height));
+          setPreviewRectShared(normalizeRectPx(start.x, start.y, point.x, point.y, containerSize.width, containerSize.height));
         }
         return;
       }
@@ -755,6 +789,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       pushLiveStrokePreview,
       resetDrawPreview,
       saveStroke,
+      setPreviewRectShared,
       toolStyles,
     ]
   );
@@ -1076,15 +1111,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
               onPressHighlight={(item) => openHighlightActions(item).catch((e) => console.log("open highlight error", e))}
               onPressStroke={onPressStroke}
             >
-              {previewRect ? (
-                <View
-                  pointerEvents="none"
-                  style={[
-                    styles.previewRect,
-                    { left: previewRect.x, top: previewRect.y, width: previewRect.w, height: previewRect.h },
-                  ]}
-                />
-              ) : null}
+              <Animated.View pointerEvents="none" style={[styles.previewRect, previewRectAnimatedStyle]} />
 
               <PanGestureHandler
                 enabled={drawEnabled}
