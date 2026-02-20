@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  LayoutChangeEvent,
   Modal,
   Pressable,
   StyleSheet,
@@ -17,7 +16,6 @@ import {
   type PanGestureHandlerGestureEvent,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
-import Pdf from "react-native-pdf";
 import { getDB } from "../db";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import { uid } from "../utils/files";
@@ -25,13 +23,17 @@ import TopToolbar from "../components/TopToolbar";
 import NotesBottomSheet, { type ReaderNote } from "../components/NotesBottomSheet";
 import TopicsDrawer, { type ReaderTopic } from "../components/TopicsDrawer";
 import HighlightMiniToolbar, { type HighlightColor } from "../components/HighlightMiniToolbar";
-import HighlightLayer, { type HighlightRow } from "./components/HighlightLayer";
+import PdfStage from "./reader/PdfStage";
+import HighlightOverlay from "./reader/HighlightOverlay";
+import StrokeOverlay from "./reader/StrokeOverlay";
+import type { HighlightRow, StrokePoint, StrokeRow, ToolKind } from "./readerTypes";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Reader">;
 
 type BookRow = { id: string; title: string; local_path: string };
 
 type RectPx = { x: number; y: number; w: number; h: number };
+type PointPx = { x: number; y: number };
 
 type TopicEditorState = {
   visible: boolean;
@@ -40,7 +42,10 @@ type TopicEditorState = {
   name: string;
 };
 
+type Mode = "none" | "highlight" | "pen" | "marker" | "eraser" | "stroke_select";
+
 const MIN_RECT_SIZE_PX = 8;
+const MIN_STROKE_POINTS = 2;
 
 const TOPIC_PRESET: Array<{ name: string; color: string }> = [
   { name: "Important", color: "#ffd84f" },
@@ -85,11 +90,32 @@ function toHighlightColor(value: string): HighlightColor {
   return "yellow";
 }
 
+function pxToPercentPoint(point: PointPx, width: number, height: number): StrokePoint {
+  return {
+    x: clamp(point.x / width, 0, 1),
+    y: clamp(point.y / height, 0, 1),
+  };
+}
+
+function distance(a: PointPx, b: PointPx) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function getStrokeStyle(mode: Mode) {
+  if (mode === "marker") {
+    return { tool: "marker" as ToolKind, width: 12, color: "#ffd84f" };
+  }
+  return { tool: "pen" as ToolKind, width: 3, color: "#246de0" };
+}
+
 export default function ReaderScreen({ route, navigation }: Props) {
   const { bookId } = route.params;
 
   const pdfRef = useRef<any>(null);
-  const drawStartRef = useRef<{ x: number; y: number } | null>(null);
+  const drawStartRef = useRef<PointPx | null>(null);
+  const strokeDraftRef = useRef<PointPx[]>([]);
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -98,8 +124,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [totalPages, setTotalPages] = useState(1);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
-  const [highlightMode, setHighlightMode] = useState(false);
-  const [penMode, setPenMode] = useState(false);
+  const [mode, setMode] = useState<Mode>("none");
   const [revisionMode, setRevisionMode] = useState(false);
 
   const [notesVisible, setNotesVisible] = useState(false);
@@ -107,11 +132,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   const [notes, setNotes] = useState<ReaderNote[]>([]);
   const [highlights, setHighlights] = useState<HighlightRow[]>([]);
+  const [strokes, setStrokes] = useState<StrokeRow[]>([]);
   const [topics, setTopics] = useState<ReaderTopic[]>([]);
   const [bookmarks, setBookmarks] = useState<number[]>([]);
 
   const [previewRect, setPreviewRect] = useState<RectPx | null>(null);
+  const [previewStroke, setPreviewStroke] = useState<{ points: StrokePoint[]; color: string; width: number; tool: ToolKind } | null>(null);
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
+  const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
   const [activeGlowHighlightId, setActiveGlowHighlightId] = useState<string | null>(null);
 
   const [miniToolbar, setMiniToolbar] = useState<{ visible: boolean; x: number; y: number }>({
@@ -121,6 +149,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   });
 
   const [highlightSheetVisible, setHighlightSheetVisible] = useState(false);
+  const [strokeSheetVisible, setStrokeSheetVisible] = useState(false);
   const [linkedNoteId, setLinkedNoteId] = useState<string | null>(null);
   const [linkedNoteText, setLinkedNoteText] = useState("");
 
@@ -144,9 +173,25 @@ export default function ReaderScreen({ route, navigation }: Props) {
     return { uri };
   }, [book]);
 
+  const onPdfError = useCallback((e: unknown) => {
+    console.log("PDF error:", e);
+    Alert.alert("PDF Error", "Could not open this PDF on device.");
+  }, []);
+
+  const highlightMode = mode === "highlight";
+  const penMode = mode === "pen" || mode === "marker" || mode === "eraser" || mode === "stroke_select";
+  const drawEnabled = mode === "highlight" || mode === "pen" || mode === "marker";
+  const eraseMode = mode === "eraser";
+  const strokeSelectMode = mode === "stroke_select";
+
   const selectedHighlight = useMemo(
     () => highlights.find((item) => item.id === selectedHighlightId) ?? null,
     [highlights, selectedHighlightId]
+  );
+
+  const selectedStroke = useMemo(
+    () => strokes.find((item) => item.id === selectedStrokeId) ?? null,
+    [selectedStrokeId, strokes]
   );
 
   const visibleTopicMap = useMemo(() => {
@@ -162,6 +207,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
       return true;
     });
   }, [highlights, revisionMode, visibleTopicMap]);
+
+  const visibleStrokes = useMemo(() => {
+    return strokes.filter((item) => {
+      if (item.topic_id && visibleTopicMap.has(item.topic_id) && !visibleTopicMap.get(item.topic_id)) return false;
+      return true;
+    });
+  }, [strokes, visibleTopicMap]);
 
   const isBookmarked = useMemo(() => bookmarks.includes(page), [bookmarks, page]);
 
@@ -213,7 +265,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     const db = await getDB();
     const result = await db.executeSql(
       `SELECT t.id, t.name, t.color, t.is_visible,
-          COALESCE(h.cnt, 0) AS highlightCount
+          COALESCE(h.cnt, 0) + COALESCE(s.cnt, 0) AS annotationCount
         FROM topics t
         LEFT JOIN (
           SELECT topic_id, COUNT(*) AS cnt
@@ -221,9 +273,15 @@ export default function ReaderScreen({ route, navigation }: Props) {
           WHERE book_id = ?
           GROUP BY topic_id
         ) h ON h.topic_id = t.id
+        LEFT JOIN (
+          SELECT topic_id, COUNT(*) AS cnt
+          FROM strokes
+          WHERE book_id = ?
+          GROUP BY topic_id
+        ) s ON s.topic_id = t.id
         WHERE t.book_id = ?
         ORDER BY t.created_at ASC`,
-      [bookId, bookId]
+      [bookId, bookId, bookId]
     );
 
     if (!result[0].rows.length) {
@@ -233,8 +291,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
     const next: ReaderTopic[] = [];
     for (let i = 0; i < result[0].rows.length; i++) {
-      const row = result[0].rows.item(i) as ReaderTopic;
-      next.push({ ...row, highlightCount: Number((row as ReaderTopic & { highlightCount: number }).highlightCount) || 0 });
+      const row = result[0].rows.item(i) as ReaderTopic & { annotationCount: number };
+      next.push({ ...row, annotationCount: Number(row.annotationCount) || 0 });
     }
 
     setTopics(next);
@@ -254,7 +312,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const loadNotes = useCallback(async () => {
     const db = await getDB();
     const result = await db.executeSql(
-      `SELECT n.id, n.page_number, n.content, n.updated_at, n.highlight_id,
+      `SELECT n.id, n.page_number, n.content, n.updated_at, n.highlight_id, n.topic_id,
           COALESCE(n.starred, 0) AS starred,
           COALESCE(n.note_kind, 'normal') AS note_kind
         FROM notes n
@@ -293,6 +351,33 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [bookId]
   );
 
+  const loadStrokesForPage = useCallback(
+    async (pageNumber: number) => {
+      const db = await getDB();
+      const result = await db.executeSql(
+        `SELECT id, book_id, page_number, topic_id, tool, color, width, points_json, created_at, updated_at
+         FROM strokes
+         WHERE book_id = ? AND page_number = ?
+         ORDER BY created_at ASC`,
+        [bookId, pageNumber]
+      );
+
+      const next: StrokeRow[] = [];
+      for (let i = 0; i < result[0].rows.length; i++) {
+        next.push(result[0].rows.item(i) as StrokeRow);
+      }
+      setStrokes(next);
+    },
+    [bookId]
+  );
+
+  const loadPageAnnotations = useCallback(
+    async (pageNumber: number) => {
+      await Promise.all([loadHighlightsForPage(pageNumber), loadStrokesForPage(pageNumber)]);
+    },
+    [loadHighlightsForPage, loadStrokesForPage]
+  );
+
   useEffect(() => {
     loadBook().catch((e) => console.log("load book error", e));
     loadNotes().catch((e) => console.log("load notes error", e));
@@ -301,8 +386,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
   }, [loadBook, loadBookmarks, loadNotes, loadTopics]);
 
   useEffect(() => {
-    loadHighlightsForPage(page).catch((e) => console.log("load highlights error", e));
-  }, [loadHighlightsForPage, page]);
+    loadPageAnnotations(page).catch((e) => console.log("load annotations error", e));
+  }, [loadPageAnnotations, page]);
 
   useEffect(() => {
     if (!pendingJumpHighlightId) return;
@@ -320,22 +405,17 @@ export default function ReaderScreen({ route, navigation }: Props) {
     };
   }, []);
 
-  const onPdfLayout = useCallback((event: LayoutChangeEvent) => {
-    const { width, height } = event.nativeEvent.layout;
-    setContainerSize({ width, height });
-  }, []);
-
   const addPageNote = useCallback(
     async (content: string, kind: "normal" | "important" | "doubt") => {
       const db = await getDB();
       const now = Date.now();
       await db.executeSql(
-        "INSERT INTO notes (id, book_id, page_number, content, highlight_id, note_kind, starred, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, 0, ?, ?)",
-        [uid(), bookId, page, content, kind, now, now]
+        "INSERT INTO notes (id, book_id, page_number, content, highlight_id, topic_id, note_kind, starred, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, 0, ?, ?)",
+        [uid(), bookId, page, content, activeTopicId, kind, now, now]
       );
       await loadNotes();
     },
-    [bookId, loadNotes, page]
+    [activeTopicId, bookId, loadNotes, page]
   );
 
   const updateNote = useCallback(
@@ -398,17 +478,17 @@ export default function ReaderScreen({ route, navigation }: Props) {
         [id, bookId, page, x, y, w, h, "yellow", activeTopicId, now, now]
       );
 
-      await loadHighlightsForPage(page);
+      setHighlights((prev) => [...prev, { id, book_id: bookId, page_number: page, x, y, w, h, color: "yellow", topic_id: activeTopicId, created_at: now, updated_at: now }]);
       await loadTopics();
 
       setSelectedHighlightId(id);
       flashHighlight(id);
       showMiniToolbarAt(rect.x + rect.w / 2, rect.y);
     },
-    [activeTopicId, bookId, containerSize.height, containerSize.width, flashHighlight, loadHighlightsForPage, loadTopics, page, showMiniToolbarAt]
+    [activeTopicId, bookId, containerSize.height, containerSize.width, flashHighlight, loadTopics, page, showMiniToolbarAt]
   );
 
-  const finishDraw = useCallback(
+  const finishHighlightDraw = useCallback(
     (startX: number, startY: number, endX: number, endY: number) => {
       if (!containerSize.width || !containerSize.height) return;
       const rect = normalizeRectPx(startX, startY, endX, endY, containerSize.width, containerSize.height);
@@ -417,48 +497,145 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [containerSize.height, containerSize.width, saveHighlight]
   );
 
+  const saveStroke = useCallback(
+    async (pointsPx: PointPx[]) => {
+      if (pointsPx.length < MIN_STROKE_POINTS || !containerSize.width || !containerSize.height) return;
+      const style = getStrokeStyle(mode);
+      const points = pointsPx.map((point) => pxToPercentPoint(point, containerSize.width, containerSize.height));
+      if (points.length < MIN_STROKE_POINTS) return;
+
+      const now = Date.now();
+      const id = uid();
+      const stroke: StrokeRow = {
+        id,
+        book_id: bookId,
+        page_number: page,
+        topic_id: activeTopicId,
+        tool: style.tool,
+        color: style.color,
+        width: style.width,
+        points_json: JSON.stringify(points),
+        created_at: now,
+        updated_at: now,
+      };
+
+      const db = await getDB();
+      await db.executeSql(
+        "INSERT INTO strokes (id, book_id, page_number, topic_id, tool, color, width, points_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          stroke.id,
+          stroke.book_id,
+          stroke.page_number,
+          stroke.topic_id,
+          stroke.tool,
+          stroke.color,
+          stroke.width,
+          stroke.points_json,
+          stroke.created_at,
+          stroke.updated_at,
+        ]
+      );
+
+      setStrokes((prev) => [...prev, stroke]);
+      await loadTopics();
+    },
+    [activeTopicId, bookId, containerSize.height, containerSize.width, loadTopics, mode, page]
+  );
+
   const resetDrawPreview = useCallback(() => {
     drawStartRef.current = null;
+    strokeDraftRef.current = [];
     setPreviewRect(null);
+    setPreviewStroke(null);
   }, []);
 
   const onDrawGestureEvent = useCallback(
     (event: PanGestureHandlerGestureEvent) => {
-      if (!highlightMode || penMode || !containerSize.width || !containerSize.height) return;
-      const start = drawStartRef.current;
-      if (!start) return;
-      const currentX = clamp(event.nativeEvent.x, 0, containerSize.width);
-      const currentY = clamp(event.nativeEvent.y, 0, containerSize.height);
-      setPreviewRect(normalizeRectPx(start.x, start.y, currentX, currentY, containerSize.width, containerSize.height));
+      if (!drawEnabled || !containerSize.width || !containerSize.height) return;
+      const current: PointPx = {
+        x: clamp(event.nativeEvent.x, 0, containerSize.width),
+        y: clamp(event.nativeEvent.y, 0, containerSize.height),
+      };
+
+      if (mode === "highlight") {
+        const start = drawStartRef.current;
+        if (!start) return;
+        setPreviewRect(normalizeRectPx(start.x, start.y, current.x, current.y, containerSize.width, containerSize.height));
+        return;
+      }
+
+      if (mode === "pen" || mode === "marker") {
+        const draft = strokeDraftRef.current;
+        const prev = draft[draft.length - 1];
+        if (!prev || distance(prev, current) < 2) return;
+        const next = [...draft, current];
+        strokeDraftRef.current = next;
+        const style = getStrokeStyle(mode);
+        setPreviewStroke({
+          points: next.map((point) => pxToPercentPoint(point, containerSize.width, containerSize.height)),
+          color: style.color,
+          width: style.width,
+          tool: style.tool,
+        });
+      }
     },
-    [containerSize.height, containerSize.width, highlightMode, penMode]
+    [containerSize.height, containerSize.width, drawEnabled, mode]
   );
 
   const onDrawHandlerStateChange = useCallback(
     (event: PanGestureHandlerStateChangeEvent) => {
-      if (!highlightMode || penMode || !containerSize.width || !containerSize.height) return;
+      if (!drawEnabled || !containerSize.width || !containerSize.height) return;
       const { state, x, y } = event.nativeEvent;
-      const clampedX = clamp(x, 0, containerSize.width);
-      const clampedY = clamp(y, 0, containerSize.height);
+      const point = {
+        x: clamp(x, 0, containerSize.width),
+        y: clamp(y, 0, containerSize.height),
+      };
 
       if (state === State.BEGAN) {
-        drawStartRef.current = { x: clampedX, y: clampedY };
-        setPreviewRect({ x: clampedX, y: clampedY, w: 0, h: 0 });
+        if (mode === "highlight") {
+          drawStartRef.current = point;
+          setPreviewRect({ x: point.x, y: point.y, w: 0, h: 0 });
+          return;
+        }
+
+        if (mode === "pen" || mode === "marker") {
+          strokeDraftRef.current = [point];
+          const style = getStrokeStyle(mode);
+          setPreviewStroke({
+            points: [pxToPercentPoint(point, containerSize.width, containerSize.height)],
+            color: style.color,
+            width: style.width,
+            tool: style.tool,
+          });
+        }
         return;
       }
 
       if (state === State.ACTIVE) {
-        const start = drawStartRef.current;
-        if (!start) return;
-        setPreviewRect(normalizeRectPx(start.x, start.y, clampedX, clampedY, containerSize.width, containerSize.height));
+        if (mode === "highlight") {
+          const start = drawStartRef.current;
+          if (!start) return;
+          setPreviewRect(normalizeRectPx(start.x, start.y, point.x, point.y, containerSize.width, containerSize.height));
+        }
         return;
       }
 
       if (state === State.END) {
-        const start = drawStartRef.current;
-        if (!start) return;
-        finishDraw(start.x, start.y, clampedX, clampedY);
-        resetDrawPreview();
+        if (mode === "highlight") {
+          const start = drawStartRef.current;
+          if (!start) return;
+          finishHighlightDraw(start.x, start.y, point.x, point.y);
+          resetDrawPreview();
+          return;
+        }
+
+        if (mode === "pen" || mode === "marker") {
+          const draft = strokeDraftRef.current;
+          const prev = draft[draft.length - 1];
+          if (!prev || distance(prev, point) >= 1.5) draft.push(point);
+          saveStroke(draft).catch((e) => console.log("save stroke error", e));
+          resetDrawPreview();
+        }
         return;
       }
 
@@ -466,7 +643,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         resetDrawPreview();
       }
     },
-    [containerSize.height, containerSize.width, finishDraw, highlightMode, penMode, resetDrawPreview]
+    [containerSize.height, containerSize.width, drawEnabled, finishHighlightDraw, mode, resetDrawPreview, saveStroke]
   );
 
   const openHighlightActions = useCallback(
@@ -505,17 +682,28 @@ export default function ReaderScreen({ route, navigation }: Props) {
     }
 
     if (linkedNoteId) {
-      await db.executeSql("UPDATE notes SET content = ?, note_kind = ?, updated_at = ? WHERE id = ?", [
+      await db.executeSql("UPDATE notes SET content = ?, note_kind = ?, topic_id = ?, updated_at = ? WHERE id = ?", [
         content,
         COLOR_TO_KIND[selectedHighlight.color],
+        selectedHighlight.topic_id ?? null,
         now,
         linkedNoteId,
       ]);
     } else {
       const noteId = uid();
       await db.executeSql(
-        "INSERT INTO notes (id, book_id, page_number, content, highlight_id, note_kind, starred, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-        [noteId, bookId, selectedHighlight.page_number, content, selectedHighlight.id, COLOR_TO_KIND[selectedHighlight.color], now, now]
+        "INSERT INTO notes (id, book_id, page_number, content, highlight_id, topic_id, note_kind, starred, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        [
+          noteId,
+          bookId,
+          selectedHighlight.page_number,
+          content,
+          selectedHighlight.id,
+          selectedHighlight.topic_id ?? null,
+          COLOR_TO_KIND[selectedHighlight.color],
+          now,
+          now,
+        ]
       );
       setLinkedNoteId(noteId);
     }
@@ -540,22 +728,77 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [linkedNoteId, loadNotes, resetToolbarTimer, selectedHighlightId]
   );
 
+  const assignTopicToSelectedHighlight = useCallback(
+    async (topicId: string | null) => {
+      if (!selectedHighlightId) return;
+      const db = await getDB();
+      const now = Date.now();
+      await db.executeSql("UPDATE highlights SET topic_id = ?, updated_at = ? WHERE id = ?", [topicId, now, selectedHighlightId]);
+      await db.executeSql("UPDATE notes SET topic_id = ?, updated_at = ? WHERE highlight_id = ?", [topicId, now, selectedHighlightId]);
+
+      setHighlights((prev) => prev.map((item) => (item.id === selectedHighlightId ? { ...item, topic_id: topicId, updated_at: now } : item)));
+      await Promise.all([loadTopics(), loadNotes()]);
+    },
+    [loadNotes, loadTopics, selectedHighlightId]
+  );
+
   const deleteSelectedHighlight = useCallback(async () => {
     if (!selectedHighlightId) return;
     const db = await getDB();
     await db.executeSql("DELETE FROM highlights WHERE id = ?", [selectedHighlightId]);
     await db.executeSql("DELETE FROM notes WHERE highlight_id = ?", [selectedHighlightId]);
 
+    setHighlights((prev) => prev.filter((item) => item.id !== selectedHighlightId));
     setSelectedHighlightId(null);
     setLinkedNoteId(null);
     setLinkedNoteText("");
     setHighlightSheetVisible(false);
     setMiniToolbar({ visible: false, x: 0, y: 0 });
 
-    await loadHighlightsForPage(page);
-    await loadNotes();
+    await Promise.all([loadNotes(), loadTopics()]);
+  }, [loadNotes, loadTopics, selectedHighlightId]);
+
+  const onPressStroke = useCallback(
+    (stroke: StrokeRow) => {
+      if (mode === "eraser") {
+        const removeStroke = async () => {
+          const db = await getDB();
+          await db.executeSql("DELETE FROM strokes WHERE id = ?", [stroke.id]);
+          setStrokes((prev) => prev.filter((item) => item.id !== stroke.id));
+          await loadTopics();
+        };
+        removeStroke().catch((e) => console.log("erase stroke error", e));
+        return;
+      }
+
+      if (mode !== "stroke_select") return;
+      setSelectedStrokeId(stroke.id);
+      setStrokeSheetVisible(true);
+    },
+    [loadTopics, mode]
+  );
+
+  const deleteSelectedStroke = useCallback(async () => {
+    if (!selectedStrokeId) return;
+    const db = await getDB();
+    await db.executeSql("DELETE FROM strokes WHERE id = ?", [selectedStrokeId]);
+    setStrokes((prev) => prev.filter((item) => item.id !== selectedStrokeId));
+    setSelectedStrokeId(null);
+    setStrokeSheetVisible(false);
     await loadTopics();
-  }, [loadHighlightsForPage, loadNotes, loadTopics, page, selectedHighlightId]);
+  }, [loadTopics, selectedStrokeId]);
+
+  const assignTopicToSelectedStroke = useCallback(
+    async (topicId: string | null) => {
+      if (!selectedStrokeId) return;
+      const db = await getDB();
+      const now = Date.now();
+      await db.executeSql("UPDATE strokes SET topic_id = ?, updated_at = ? WHERE id = ?", [topicId, now, selectedStrokeId]);
+      setStrokes((prev) => prev.map((item) => (item.id === selectedStrokeId ? { ...item, topic_id: topicId, updated_at: now } : item)));
+      await loadTopics();
+    },
+    [loadTopics, selectedStrokeId]
+  );
 
   const onPressNote = useCallback(
     (note: ReaderNote) => {
@@ -611,15 +854,16 @@ export default function ReaderScreen({ route, navigation }: Props) {
           onPress: async () => {
             const db = await getDB();
             await db.executeSql("UPDATE highlights SET topic_id = NULL WHERE topic_id = ?", [topicId]);
+            await db.executeSql("UPDATE strokes SET topic_id = NULL WHERE topic_id = ?", [topicId]);
+            await db.executeSql("UPDATE notes SET topic_id = NULL WHERE topic_id = ?", [topicId]);
             await db.executeSql("DELETE FROM topics WHERE id = ?", [topicId]);
-            await loadTopics();
-            await loadHighlightsForPage(page);
+            await Promise.all([loadTopics(), loadPageAnnotations(page), loadNotes()]);
           },
         },
         { text: "Cancel", style: "cancel" },
       ]);
     },
-    [loadHighlightsForPage, loadTopics, page, topics]
+    [loadNotes, loadPageAnnotations, loadTopics, page, topics]
   );
 
   const saveTopicEditor = useCallback(async () => {
@@ -665,21 +909,19 @@ export default function ReaderScreen({ route, navigation }: Props) {
         isBookmarked={isBookmarked}
         onPressBack={navigation.goBack}
         onToggleHighlight={() => {
-          setHighlightMode((prev) => {
-            const next = !prev;
-            if (next) setPenMode(false);
-            if (!next) resetDrawPreview();
+          setMode((prev) => {
+            const next = prev === "highlight" ? "none" : "highlight";
+            if (next === "none") resetDrawPreview();
             return next;
           });
         }}
         onTogglePen={() => {
-          setPenMode((prev) => {
-            const next = !prev;
-            if (next) {
-              setHighlightMode(false);
+          setMode((prev) => {
+            if (prev === "pen" || prev === "marker" || prev === "eraser" || prev === "stroke_select") {
               resetDrawPreview();
+              return "none";
             }
-            return next;
+            return "pen";
           });
         }}
         onToggleBookmark={() => toggleBookmark().catch((e) => console.log("bookmark error", e))}
@@ -687,62 +929,100 @@ export default function ReaderScreen({ route, navigation }: Props) {
         onToggleRevision={() => setRevisionMode((prev) => !prev)}
       />
 
-      <View style={styles.readerArea} onLayout={onPdfLayout}>
-        <Pdf
-          ref={pdfRef}
+      <View style={styles.readerArea}>
+        <PdfStage
           source={source}
-          style={styles.pdf}
-          onLoadComplete={(pages) => setTotalPages(pages)}
-          onPageChanged={(nextPage) => setPage(nextPage)}
-          onError={(e) => {
-            console.log("PDF error:", e);
-            Alert.alert("PDF Error", "Could not open this PDF on device.");
-          }}
+          pdfRef={pdfRef}
+          onLayoutSize={setContainerSize}
+          onLoadComplete={setTotalPages}
+          onPageChanged={setPage}
+          onError={onPdfError}
         />
 
-        <HighlightLayer
-          width={containerSize.width}
-          height={containerSize.height}
-          highlights={visibleHighlights}
-          activeHighlightId={activeGlowHighlightId}
-          disabled={highlightMode}
-          onPressHighlight={(item) => openHighlightActions(item).catch((e) => console.log("open highlight error", e))}
-        />
-
-        {previewRect ? (
-          <View
-            pointerEvents="none"
-            style={[
-              styles.previewRect,
-              { left: previewRect.x, top: previewRect.y, width: previewRect.w, height: previewRect.h },
-            ]}
+        <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
+          <HighlightOverlay
+            width={containerSize.width}
+            height={containerSize.height}
+            highlights={visibleHighlights}
+            activeHighlightId={activeGlowHighlightId}
+            disabled={highlightMode}
+            onPressHighlight={(item) => openHighlightActions(item).catch((e) => console.log("open highlight error", e))}
           />
-        ) : null}
 
-        <PanGestureHandler
-          enabled={highlightMode && !penMode}
-          onGestureEvent={onDrawGestureEvent}
-          onHandlerStateChange={onDrawHandlerStateChange}
-        >
-          <View style={StyleSheet.absoluteFillObject} pointerEvents={highlightMode && !penMode ? "auto" : "none"} />
-        </PanGestureHandler>
+          <StrokeOverlay
+            width={containerSize.width}
+            height={containerSize.height}
+            strokes={visibleStrokes}
+            previewStroke={previewStroke}
+            eraseMode={eraseMode}
+            selectable={strokeSelectMode}
+            onPressStroke={onPressStroke}
+          />
 
-        <HighlightMiniToolbar
-          visible={miniToolbar.visible && !!selectedHighlight}
-          x={miniToolbar.x}
-          y={miniToolbar.y}
-          color={selectedHighlight?.color ?? "yellow"}
-          onAddNote={() => {
-            setHighlightSheetVisible(true);
-            resetToolbarTimer();
-          }}
-          onChangeColor={(color) => updateHighlightColor(color).catch((e) => console.log("color update error", e))}
-          onDelete={() => deleteSelectedHighlight().catch((e) => console.log("delete highlight error", e))}
-        />
+          {previewRect ? (
+            <View
+              pointerEvents="none"
+              style={[
+                styles.previewRect,
+                { left: previewRect.x, top: previewRect.y, width: previewRect.w, height: previewRect.h },
+              ]}
+            />
+          ) : null}
 
-        <Pressable style={styles.notesFab} onPress={() => setNotesVisible(true)}>
-          <Text style={styles.notesFabText}>Notes</Text>
-        </Pressable>
+          <PanGestureHandler
+            enabled={drawEnabled}
+            onGestureEvent={onDrawGestureEvent}
+            onHandlerStateChange={onDrawHandlerStateChange}
+          >
+            <View style={StyleSheet.absoluteFillObject} pointerEvents={drawEnabled ? "auto" : "none"} />
+          </PanGestureHandler>
+
+          <HighlightMiniToolbar
+            visible={miniToolbar.visible && !!selectedHighlight}
+            x={miniToolbar.x}
+            y={miniToolbar.y}
+            color={selectedHighlight?.color ?? "yellow"}
+            onAddNote={() => {
+              setHighlightSheetVisible(true);
+              resetToolbarTimer();
+            }}
+            onChangeColor={(color) => updateHighlightColor(color).catch((e) => console.log("color update error", e))}
+            onDelete={() => deleteSelectedHighlight().catch((e) => console.log("delete highlight error", e))}
+          />
+
+          {penMode ? (
+            <View style={styles.penPalette}>
+              <Pressable
+                style={[styles.penPaletteBtn, mode === "pen" ? styles.penPaletteBtnActive : null]}
+                onPress={() => setMode("pen")}
+              >
+                <Text style={styles.penPaletteText}>Pen</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.penPaletteBtn, mode === "marker" ? styles.penPaletteBtnActive : null]}
+                onPress={() => setMode("marker")}
+              >
+                <Text style={styles.penPaletteText}>Marker</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.penPaletteBtn, mode === "eraser" ? styles.penPaletteBtnActive : null]}
+                onPress={() => setMode("eraser")}
+              >
+                <Text style={styles.penPaletteText}>Eraser</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.penPaletteBtn, mode === "stroke_select" ? styles.penPaletteBtnActive : null]}
+                onPress={() => setMode("stroke_select")}
+              >
+                <Text style={styles.penPaletteText}>Select</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          <Pressable style={styles.notesFab} onPress={() => setNotesVisible(true)}>
+            <Text style={styles.notesFabText}>Notes</Text>
+          </Pressable>
+        </View>
       </View>
 
       <NotesBottomSheet
@@ -805,8 +1085,67 @@ export default function ReaderScreen({ route, navigation }: Props) {
               ))}
             </View>
 
+            <Text style={styles.sheetSectionLabel}>Assign Topic</Text>
+            <View style={styles.topicChipsRow}>
+              <Pressable
+                onPress={() => assignTopicToSelectedHighlight(null).catch((e) => console.log("clear topic error", e))}
+                style={[styles.topicChip, !selectedHighlight?.topic_id ? styles.topicChipActive : null]}
+              >
+                <Text style={styles.topicChipText}>No Topic</Text>
+              </Pressable>
+              {topics.map((topic) => (
+                <Pressable
+                  key={topic.id}
+                  onPress={() => assignTopicToSelectedHighlight(topic.id).catch((e) => console.log("assign topic error", e))}
+                  style={[
+                    styles.topicChip,
+                    selectedHighlight?.topic_id === topic.id ? styles.topicChipActive : null,
+                    { borderColor: topic.color },
+                  ]}
+                >
+                  <Text style={styles.topicChipText}>{topic.name}</Text>
+                </Pressable>
+              ))}
+            </View>
+
             <Pressable style={styles.sheetDangerBtn} onPress={() => deleteSelectedHighlight().catch((e) => console.log("delete error", e))}>
               <Text style={styles.sheetDangerBtnText}>Delete Highlight</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={strokeSheetVisible} transparent animationType="fade" onRequestClose={() => setStrokeSheetVisible(false)}>
+        <View style={styles.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setStrokeSheetVisible(false)} />
+          <View style={styles.actionSheet}>
+            <Text style={styles.actionSheetTitle}>{selectedStroke?.tool === "marker" ? "Marker" : "Pen"} Stroke</Text>
+
+            <Text style={styles.sheetSectionLabel}>Assign Topic</Text>
+            <View style={styles.topicChipsRow}>
+              <Pressable
+                onPress={() => assignTopicToSelectedStroke(null).catch((e) => console.log("clear stroke topic error", e))}
+                style={[styles.topicChip, !selectedStroke?.topic_id ? styles.topicChipActive : null]}
+              >
+                <Text style={styles.topicChipText}>No Topic</Text>
+              </Pressable>
+              {topics.map((topic) => (
+                <Pressable
+                  key={topic.id}
+                  onPress={() => assignTopicToSelectedStroke(topic.id).catch((e) => console.log("assign stroke topic error", e))}
+                  style={[
+                    styles.topicChip,
+                    selectedStroke?.topic_id === topic.id ? styles.topicChipActive : null,
+                    { borderColor: topic.color },
+                  ]}
+                >
+                  <Text style={styles.topicChipText}>{topic.name}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Pressable style={styles.sheetDangerBtn} onPress={() => deleteSelectedStroke().catch((e) => console.log("delete stroke error", e))}>
+              <Text style={styles.sheetDangerBtnText}>Delete Stroke</Text>
             </Pressable>
           </View>
         </View>
@@ -861,16 +1200,41 @@ const styles = StyleSheet.create({
     position: "relative",
     overflow: "hidden",
   },
-  pdf: {
-    flex: 1,
-    backgroundColor: "#eff3f8",
-  },
   previewRect: {
     position: "absolute",
     borderRadius: 9,
     borderWidth: 2,
     borderColor: "#2f77e6",
     backgroundColor: "rgba(76, 141, 241, 0.2)",
+  },
+  penPalette: {
+    position: "absolute",
+    left: 12,
+    bottom: 24,
+    borderRadius: 12,
+    padding: 6,
+    gap: 6,
+    backgroundColor: "rgba(255,255,255,0.94)",
+    borderWidth: 1,
+    borderColor: "#d3dee8",
+  },
+  penPaletteBtn: {
+    minWidth: 80,
+    minHeight: 44,
+    borderRadius: 10,
+    backgroundColor: "#f5f8fb",
+    borderWidth: 1,
+    borderColor: "#ced9e3",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  penPaletteBtnActive: {
+    backgroundColor: "#e7f0ff",
+    borderColor: "#357be1",
+  },
+  penPaletteText: {
+    fontWeight: "800",
+    color: "#203344",
   },
   notesFab: {
     position: "absolute",
@@ -915,6 +1279,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#112334",
   },
+  sheetSectionLabel: {
+    marginTop: 4,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#20313f",
+  },
   sheetInput: {
     minHeight: 86,
     borderWidth: 1,
@@ -955,6 +1325,29 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#183046",
   },
+  topicChipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  topicChip: {
+    minHeight: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#c8d5df",
+    paddingHorizontal: 10,
+    justifyContent: "center",
+    backgroundColor: "#f8fbff",
+  },
+  topicChipActive: {
+    backgroundColor: "#e5f2ff",
+    borderColor: "#2d74de",
+  },
+  topicChipText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#183046",
+  },
   sheetDangerBtn: {
     minHeight: 44,
     borderRadius: 12,
@@ -978,13 +1371,13 @@ const styles = StyleSheet.create({
   topicEditorTitle: {
     fontSize: 16,
     fontWeight: "800",
-    color: "#102131",
+    color: "#122433",
   },
   topicEditorInput: {
-    minHeight: 42,
-    borderWidth: 1,
-    borderColor: "#d1dce5",
+    minHeight: 44,
     borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#d2dce5",
     paddingHorizontal: 10,
   },
   topicEditorActions: {
@@ -994,24 +1387,24 @@ const styles = StyleSheet.create({
   },
   topicEditorButton: {
     minHeight: 40,
+    minWidth: 88,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#d1dce5",
-    paddingHorizontal: 12,
+    borderColor: "#c8d4df",
     justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f5f8fb",
   },
   topicEditorButtonText: {
-    fontSize: 13,
     fontWeight: "700",
-    color: "#2f4354",
+    color: "#1d3345",
   },
   topicEditorPrimary: {
-    backgroundColor: "#1f6fde",
-    borderColor: "#1f6fde",
+    borderColor: "#2c71d8",
+    backgroundColor: "#e6f0ff",
   },
   topicEditorPrimaryText: {
-    color: "#fff",
     fontWeight: "800",
-    fontSize: 13,
+    color: "#1458bd",
   },
 });

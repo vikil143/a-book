@@ -6,7 +6,7 @@ export type ReaderTopic = {
   name: string;
   color: string;
   is_visible: number;
-  highlightCount: number;
+  annotationCount: number;
 };
 
 type Props = {
@@ -78,7 +78,7 @@ function TopicsDrawer({
                 <Text numberOfLines={1} style={styles.topicName}>
                   {topic.name}
                 </Text>
-                <Text style={styles.count}>{topic.highlightCount}</Text>
+                <Text style={styles.count}>{topic.annotationCount}</Text>
                 <Pressable
                   onPress={() => onToggleVisibility(topic.id, topic.is_visible ? 0 : 1)}
                   style={[styles.visibilityChip, topic.is_visible ? styles.visible : styles.hidden]}

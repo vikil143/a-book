@@ -19,6 +19,7 @@ export type ReaderNote = {
   content: string;
   updated_at: number;
   highlight_id: string | null;
+  topic_id?: string | null;
   starred: number;
   note_kind: "normal" | "important" | "doubt";
 };
