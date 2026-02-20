@@ -14,11 +14,12 @@ type Props = {
   onClose: () => void;
 };
 
-const COLORS: HighlightColor[] = ["yellow", "green", "pink"];
+const COLORS: HighlightColor[] = ["yellow", "green", "blue", "pink"];
 
 const COLOR_SWATCH_MAP: Record<HighlightColor, string> = {
   yellow: "#ffd000",
   green: "#50dc78",
+  blue: "#5aa7ff",
   pink: "#ff69b4",
 };
 

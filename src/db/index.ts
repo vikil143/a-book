@@ -61,18 +61,65 @@ export async function initDB() {
     );
   `);
 
+  await db.executeSql(`
+    CREATE TABLE IF NOT EXISTS topics (
+      id TEXT PRIMARY KEY NOT NULL,
+      book_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      is_visible INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    );
+  `);
+
+  await db.executeSql(`
+    CREATE TABLE IF NOT EXISTS bookmarks (
+      id TEXT PRIMARY KEY NOT NULL,
+      book_id TEXT NOT NULL,
+      page_number INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+    );
+  `);
+
   const notesHasHighlightId = await hasColumn(db, "notes", "highlight_id");
   if (!notesHasHighlightId) {
     await db.executeSql("ALTER TABLE notes ADD COLUMN highlight_id TEXT NULL;");
   }
 
+  const notesHasStarred = await hasColumn(db, "notes", "starred");
+  if (!notesHasStarred) {
+    await db.executeSql("ALTER TABLE notes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;");
+  }
+
+  const notesHasKind = await hasColumn(db, "notes", "note_kind");
+  if (!notesHasKind) {
+    await db.executeSql("ALTER TABLE notes ADD COLUMN note_kind TEXT NOT NULL DEFAULT 'normal';");
+  }
+
+  const highlightsHasTopicId = await hasColumn(db, "highlights", "topic_id");
+  if (!highlightsHasTopicId) {
+    await db.executeSql("ALTER TABLE highlights ADD COLUMN topic_id TEXT NULL;");
+  }
+
   await db.executeSql("CREATE INDEX IF NOT EXISTS idx_notes_book_updated ON notes(book_id, updated_at DESC);");
   await db.executeSql("CREATE INDEX IF NOT EXISTS idx_highlights_book_page ON highlights(book_id, page_number);");
+  await db.executeSql("CREATE INDEX IF NOT EXISTS idx_topics_book ON topics(book_id);");
+  await db.executeSql("CREATE INDEX IF NOT EXISTS idx_bookmarks_book_page ON bookmarks(book_id, page_number);");
+  await db.executeSql("CREATE INDEX IF NOT EXISTS idx_notes_book_kind_starred ON notes(book_id, note_kind, starred);");
+  await db.executeSql("CREATE INDEX IF NOT EXISTS idx_highlights_book_topic ON highlights(book_id, topic_id);");
 
   await db.executeSql(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_highlight_unique
     ON notes(highlight_id)
     WHERE highlight_id IS NOT NULL;
+  `);
+
+  await db.executeSql(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_unique_page
+    ON bookmarks(book_id, page_number);
   `);
 
   return db;
