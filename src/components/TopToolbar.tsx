@@ -8,6 +8,7 @@ type Props = {
   highlightMode: boolean;
   penMode: boolean;
   revisionMode: boolean;
+  revisionImportantOnly: boolean;
   isBookmarked: boolean;
   onPressBack: () => void;
   onToggleHighlight: () => void;
@@ -15,6 +16,7 @@ type Props = {
   onToggleBookmark: () => void;
   onPressTopics: () => void;
   onToggleRevision: () => void;
+  onToggleRevisionImportantOnly: () => void;
 };
 
 type ToolbarButtonProps = {
@@ -46,6 +48,7 @@ const TopToolbar = React.memo(function TopToolbar({
   highlightMode,
   penMode,
   revisionMode,
+  revisionImportantOnly,
   isBookmarked,
   onPressBack,
   onToggleHighlight,
@@ -53,6 +56,7 @@ const TopToolbar = React.memo(function TopToolbar({
   onToggleBookmark,
   onPressTopics,
   onToggleRevision,
+  onToggleRevisionImportantOnly,
 }: Props) {
   return (
     <View style={styles.wrapper}>
@@ -80,6 +84,11 @@ const TopToolbar = React.memo(function TopToolbar({
       {revisionMode ? (
         <View style={styles.badge}>
           <Text style={styles.badgeText}>Revision Mode</Text>
+          <Pressable style={styles.badgeToggle} onPress={onToggleRevisionImportantOnly}>
+            <Text style={styles.badgeToggleText}>
+              {revisionImportantOnly ? "Important only: On" : "Important only: Off"}
+            </Text>
+          </Pressable>
         </View>
       ) : null}
     </View>
@@ -159,6 +168,9 @@ const styles = StyleSheet.create({
   },
   badge: {
     alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginTop: 8,
     marginLeft: 52,
     paddingHorizontal: 10,
@@ -169,6 +181,19 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 12,
     color: "#207744",
+    fontWeight: "700",
+  },
+  badgeToggle: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#9bd2ad",
+    backgroundColor: "#f7fff9",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  badgeToggleText: {
+    fontSize: 11,
+    color: "#1d6a3e",
     fontWeight: "700",
   },
 });

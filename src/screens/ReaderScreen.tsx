@@ -50,6 +50,7 @@ type TopicEditorState = {
   mode: "add" | "rename";
   topicId: string | null;
   name: string;
+  color: string;
 };
 
 type Mode = "none" | "highlight" | "pen" | "marker" | "highlighter" | "underline" | "eraser" | "stroke_select";
@@ -136,6 +137,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   const [mode, setMode] = useState<Mode>("none");
   const [revisionMode, setRevisionMode] = useState(false);
+  const [revisionImportantOnly, setRevisionImportantOnly] = useState(true);
 
   const [notesVisible, setNotesVisible] = useState(false);
   const [topicsVisible, setTopicsVisible] = useState(false);
@@ -170,6 +172,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     mode: "add",
     topicId: null,
     name: "",
+    color: TOPIC_PRESET[0].color,
   });
   const [toolStyles, setToolStyles] = useState<Record<ToolKind, { width: number; color: string }>>({
     pen: { width: 3, color: "#246de0" },
@@ -227,10 +230,10 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const visibleHighlights = useMemo(() => {
     return highlights.filter((item) => {
       if (item.topic_id && visibleTopicMap.has(item.topic_id) && !visibleTopicMap.get(item.topic_id)) return false;
-      if (revisionMode && item.color !== "yellow") return false;
+      if (revisionMode && revisionImportantOnly && item.color !== "yellow") return false;
       return true;
     });
-  }, [highlights, revisionMode, visibleTopicMap]);
+  }, [highlights, revisionImportantOnly, revisionMode, visibleTopicMap]);
 
   const visibleStrokes = useMemo(() => {
     return strokes.filter((item) => {
@@ -987,8 +990,9 @@ export default function ReaderScreen({ route, navigation }: Props) {
   );
 
   const addTopic = useCallback(() => {
-    setTopicEditor({ visible: true, mode: "add", topicId: null, name: "" });
-  }, []);
+    const color = TOPIC_PRESET[topics.length % TOPIC_PRESET.length]?.color ?? "#91a4b5";
+    setTopicEditor({ visible: true, mode: "add", topicId: null, name: "", color });
+  }, [topics.length]);
 
   const renameOrDeleteTopic = useCallback(
     (topicId: string) => {
@@ -1004,6 +1008,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
               mode: "rename",
               topicId,
               name: target.name,
+              color: target.color,
             }),
         },
         {
@@ -1032,7 +1037,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     const now = Date.now();
 
     if (topicEditor.mode === "add") {
-      const color = TOPIC_PRESET[topics.length % TOPIC_PRESET.length]?.color ?? "#91a4b5";
+      const color = topicEditor.color || TOPIC_PRESET[topics.length % TOPIC_PRESET.length]?.color || "#91a4b5";
       const topicId = uid();
       await db.executeSql(
         "INSERT INTO topics (id, book_id, name, color, is_visible, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
@@ -1043,7 +1048,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       await db.executeSql("UPDATE topics SET name = ?, updated_at = ? WHERE id = ?", [name, now, topicEditor.topicId]);
     }
 
-    setTopicEditor({ visible: false, mode: "add", topicId: null, name: "" });
+    setTopicEditor({ visible: false, mode: "add", topicId: null, name: "", color: TOPIC_PRESET[0].color });
     await loadTopics();
   }, [bookId, loadTopics, topicEditor, topics.length]);
 
@@ -1064,6 +1069,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         highlightMode={highlightMode}
         penMode={penMode}
         revisionMode={revisionMode}
+        revisionImportantOnly={revisionImportantOnly}
         isBookmarked={isBookmarked}
         onPressBack={navigation.goBack}
         onToggleHighlight={() => {
@@ -1092,6 +1098,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         onToggleBookmark={() => toggleBookmark().catch((e) => console.log("bookmark error", e))}
         onPressTopics={() => setTopicsVisible(true)}
         onToggleRevision={() => setRevisionMode((prev) => !prev)}
+        onToggleRevisionImportantOnly={() => setRevisionImportantOnly((prev) => !prev)}
       />
 
       <View style={styles.readerArea}>
@@ -1430,10 +1437,27 @@ export default function ReaderScreen({ route, navigation }: Props) {
               placeholder="Topic name"
               style={styles.topicEditorInput}
             />
+            {topicEditor.mode === "add" ? (
+              <>
+                <Text style={styles.sheetSectionLabel}>Color</Text>
+                <View style={styles.topicColorRow}>
+                  {["#ffd84f", "#4dd589", "#5aa7ff", "#f67bc4", "#91a4b5", "#f69a58"].map((color) => {
+                    const selected = topicEditor.color === color;
+                    return (
+                      <Pressable
+                        key={color}
+                        onPress={() => setTopicEditor((prev) => ({ ...prev, color }))}
+                        style={[styles.topicColorSwatch, selected ? styles.topicColorSwatchActive : null, { backgroundColor: color }]}
+                      />
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
             <View style={styles.topicEditorActions}>
               <Pressable
                 style={styles.topicEditorButton}
-                onPress={() => setTopicEditor({ visible: false, mode: "add", topicId: null, name: "" })}
+                onPress={() => setTopicEditor({ visible: false, mode: "add", topicId: null, name: "", color: TOPIC_PRESET[0].color })}
               >
                 <Text style={styles.topicEditorButtonText}>Cancel</Text>
               </Pressable>
@@ -1733,6 +1757,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#d2dce5",
     paddingHorizontal: 10,
+  },
+  topicColorRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  topicColorSwatch: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#c7d2dc",
+  },
+  topicColorSwatchActive: {
+    borderColor: "#0f1820",
+    borderWidth: 2,
   },
   topicEditorActions: {
     flexDirection: "row",
