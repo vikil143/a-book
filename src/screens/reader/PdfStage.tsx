@@ -5,13 +5,14 @@ import Pdf from "react-native-pdf";
 type Props = {
   source: { uri: string };
   pdfRef: React.RefObject<any>;
+  scrollEnabled: boolean;
   onLayoutSize: (size: { width: number; height: number }) => void;
   onLoadComplete: (pages: number) => void;
   onPageChanged: (page: number) => void;
   onError: (error: unknown) => void;
 };
 
-function PdfStageImpl({ source, pdfRef, onLayoutSize, onLoadComplete, onPageChanged, onError }: Props) {
+function PdfStageImpl({ source, pdfRef, scrollEnabled, onLayoutSize, onLoadComplete, onPageChanged, onError }: Props) {
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {
       const { width, height } = event.nativeEvent.layout;
@@ -26,6 +27,7 @@ function PdfStageImpl({ source, pdfRef, onLayoutSize, onLoadComplete, onPageChan
         ref={pdfRef}
         source={source}
         style={styles.pdf}
+        scrollEnabled={scrollEnabled}
         onLoadComplete={(pages) => onLoadComplete(pages)}
         onPageChanged={(nextPage) => onPageChanged(nextPage)}
         onError={onError}

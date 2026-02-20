@@ -67,7 +67,7 @@ export async function initDB() {
       book_id TEXT NOT NULL,
       page_number INTEGER NOT NULL,
       topic_id TEXT NULL,
-      tool TEXT NOT NULL CHECK (tool IN ('pen', 'marker')),
+      tool TEXT NOT NULL CHECK (tool IN ('pen', 'marker', 'underline')),
       color TEXT NOT NULL,
       width REAL NOT NULL CHECK (width > 0),
       points_json TEXT NOT NULL,
@@ -123,6 +123,32 @@ export async function initDB() {
   const highlightsHasTopicId = await hasColumn(db, "highlights", "topic_id");
   if (!highlightsHasTopicId) {
     await db.executeSql("ALTER TABLE highlights ADD COLUMN topic_id TEXT NULL;");
+  }
+
+  const strokesSchemaResult = await db.executeSql("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'strokes' LIMIT 1;");
+  const strokesSchemaSql = String(strokesSchemaResult[0].rows.item(0)?.sql ?? "");
+  if (!strokesSchemaSql.includes("'underline'")) {
+    await db.executeSql(`
+      CREATE TABLE IF NOT EXISTS strokes_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        book_id TEXT NOT NULL,
+        page_number INTEGER NOT NULL,
+        topic_id TEXT NULL,
+        tool TEXT NOT NULL CHECK (tool IN ('pen', 'marker', 'underline')),
+        color TEXT NOT NULL,
+        width REAL NOT NULL CHECK (width > 0),
+        points_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
+      );
+    `);
+    await db.executeSql(`
+      INSERT OR REPLACE INTO strokes_new (id, book_id, page_number, topic_id, tool, color, width, points_json, created_at, updated_at)
+      SELECT id, book_id, page_number, topic_id, tool, color, width, points_json, created_at, updated_at FROM strokes;
+    `);
+    await db.executeSql("DROP TABLE strokes;");
+    await db.executeSql("ALTER TABLE strokes_new RENAME TO strokes;");
   }
 
   await db.executeSql("CREATE INDEX IF NOT EXISTS idx_notes_book_updated ON notes(book_id, updated_at DESC);");

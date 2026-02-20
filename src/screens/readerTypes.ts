@@ -1,10 +1,12 @@
 export type HighlightColor = "yellow" | "green" | "blue" | "pink";
 
-export type ToolKind = "pen" | "marker";
+export type ToolKind = "pen" | "marker" | "underline";
 
 export type StrokePoint = {
   x: number;
   y: number;
+  v?: number;
+  t?: number;
 };
 
 export type HighlightRow = {
