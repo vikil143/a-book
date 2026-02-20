@@ -21,6 +21,16 @@ async function hasColumn(db: SQLite.SQLiteDatabase, table: string, column: strin
   return false;
 }
 
+async function safeAddColumn(db: SQLite.SQLiteDatabase, table: string, columnDef: string) {
+  try {
+    await db.executeSql(`ALTER TABLE ${table} ADD COLUMN ${columnDef};`);
+  } catch (error) {
+    const message = String((error as { message?: string })?.message ?? error ?? "");
+    if (message.toLowerCase().includes("duplicate column name")) return;
+    throw error;
+  }
+}
+
 export async function initDB() {
   const db = await getDB();
 
@@ -103,27 +113,27 @@ export async function initDB() {
 
   const notesHasHighlightId = await hasColumn(db, "notes", "highlight_id");
   if (!notesHasHighlightId) {
-    await db.executeSql("ALTER TABLE notes ADD COLUMN highlight_id TEXT NULL;");
+    await safeAddColumn(db, "notes", "highlight_id TEXT NULL");
   }
 
   const notesHasStarred = await hasColumn(db, "notes", "starred");
   if (!notesHasStarred) {
-    await db.executeSql("ALTER TABLE notes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;");
+    await safeAddColumn(db, "notes", "starred INTEGER NOT NULL DEFAULT 0");
   }
 
   const notesHasKind = await hasColumn(db, "notes", "note_kind");
   if (!notesHasKind) {
-    await db.executeSql("ALTER TABLE notes ADD COLUMN note_kind TEXT NOT NULL DEFAULT 'normal';");
+    await safeAddColumn(db, "notes", "note_kind TEXT NOT NULL DEFAULT 'normal'");
   }
 
   const notesHasTopicId = await hasColumn(db, "notes", "topic_id");
   if (!notesHasTopicId) {
-    await db.executeSql("ALTER TABLE notes ADD COLUMN topic_id TEXT NULL;");
+    await safeAddColumn(db, "notes", "topic_id TEXT NULL");
   }
 
   const highlightsHasTopicId = await hasColumn(db, "highlights", "topic_id");
   if (!highlightsHasTopicId) {
-    await db.executeSql("ALTER TABLE highlights ADD COLUMN topic_id TEXT NULL;");
+    await safeAddColumn(db, "highlights", "topic_id TEXT NULL");
   }
 
   const strokesSchemaResult = await db.executeSql("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'strokes' LIMIT 1;");

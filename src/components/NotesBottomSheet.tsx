@@ -11,7 +11,8 @@ import {
   View,
 } from "react-native";
 
-export type NotesFilter = "all" | "important" | "doubt" | "starred";
+export type NotesFilter = "all" | "page" | "linked";
+export type HighlightColor = "yellow" | "green" | "blue" | "pink";
 
 export type ReaderNote = {
   id: string;
@@ -19,6 +20,7 @@ export type ReaderNote = {
   content: string;
   updated_at: number;
   highlight_id: string | null;
+  highlight_color?: HighlightColor | null;
   topic_id?: string | null;
   starred: number;
   note_kind: "normal" | "important" | "doubt";
@@ -28,20 +30,17 @@ type Props = {
   visible: boolean;
   notes: ReaderNote[];
   currentPage: number;
-  revisionMode: boolean;
   onClose: () => void;
   onAddNote: (content: string, kind: "normal" | "important" | "doubt") => void;
   onPressNote: (note: ReaderNote) => void;
   onDeleteNote: (id: string) => void;
   onUpdateNote: (id: string, content: string) => void;
-  onToggleStar: (id: string, starred: number) => void;
 };
 
 const FILTERS: { key: NotesFilter; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "important", label: "Important" },
-  { key: "doubt", label: "Doubts" },
-  { key: "starred", label: "Starred" },
+  { key: "page", label: "Page Notes" },
+  { key: "linked", label: "Linked Notes" },
 ];
 
 const SHEET_HEIGHT = Math.round(Dimensions.get("window").height * 0.75);
@@ -50,13 +49,11 @@ function NotesBottomSheet({
   visible,
   notes,
   currentPage,
-  revisionMode,
   onClose,
   onAddNote,
   onPressNote,
   onDeleteNote,
   onUpdateNote,
-  onToggleStar,
 }: Props) {
   const [mounted, setMounted] = useState(visible);
   const [draft, setDraft] = useState("");
@@ -68,12 +65,6 @@ function NotesBottomSheet({
 
   const translateY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (revisionMode) {
-      setFilter("important");
-    }
-  }, [revisionMode]);
 
   useEffect(() => {
     if (visible) {
@@ -111,14 +102,11 @@ function NotesBottomSheet({
     [onClose, translateY]
   );
 
-  const effectiveFilter = revisionMode ? "important" : filter;
-
   const groupedNotes = useMemo(() => {
     const filtered = notes.filter((item) => {
-      if (effectiveFilter === "all") return true;
-      if (effectiveFilter === "important") return item.note_kind === "important";
-      if (effectiveFilter === "doubt") return item.note_kind === "doubt";
-      return item.starred === 1;
+      if (filter === "all") return true;
+      if (filter === "page") return !item.highlight_id;
+      return !!item.highlight_id;
     });
 
     const groups = new Map<number, ReaderNote[]>();
@@ -134,7 +122,7 @@ function NotesBottomSheet({
         page,
         notes: pageNotes.sort((a, b) => b.updated_at - a.updated_at),
       }));
-  }, [effectiveFilter, notes]);
+  }, [filter, notes]);
 
   if (!mounted) return null;
 
@@ -156,12 +144,11 @@ function NotesBottomSheet({
 
         <View style={styles.filterRow}>
           {FILTERS.map((chip) => {
-            const active = chip.key === effectiveFilter;
+            const active = chip.key === filter;
             return (
               <Pressable
                 key={chip.key}
                 onPress={() => setFilter(chip.key)}
-                disabled={revisionMode}
                 style={[styles.filterChip, active ? styles.filterChipActive : null]}
               >
                 <Text style={[styles.filterText, active ? styles.filterTextActive : null]}>{chip.label}</Text>
@@ -231,13 +218,35 @@ function NotesBottomSheet({
                         return (
                           <Pressable key={item.id} style={styles.noteCard} onPress={() => onPressNote(item)}>
                             <View style={styles.noteTopRow}>
-                              <Text style={styles.noteTag}>{item.note_kind.toUpperCase()}</Text>
-                              <Pressable
-                                onPress={() => onToggleStar(item.id, item.starred)}
-                                style={styles.noteActionChip}
-                              >
-                                <Text style={styles.noteActionText}>{item.starred ? "Unstar" : "Star"}</Text>
-                              </Pressable>
+                              {item.highlight_id ? (
+                                <View
+                                  style={[
+                                    styles.linkedBadge,
+                                    {
+                                      borderColor:
+                                        item.highlight_color === "green"
+                                          ? "#2f9f63"
+                                          : item.highlight_color === "blue"
+                                            ? "#3577c2"
+                                            : item.highlight_color === "pink"
+                                              ? "#bf538e"
+                                              : "#b89c39",
+                                      backgroundColor:
+                                        item.highlight_color === "green"
+                                          ? "#e7f8ef"
+                                          : item.highlight_color === "blue"
+                                            ? "#eaf4ff"
+                                            : item.highlight_color === "pink"
+                                              ? "#ffeef7"
+                                              : "#fff8df",
+                                    },
+                                  ]}
+                                >
+                                  <Text style={styles.linkedBadgeText}>LINKED</Text>
+                                </View>
+                              ) : (
+                                <Text style={styles.noteTag}>PAGE NOTE</Text>
+                              )}
                             </View>
 
                             {isEditing ? (
@@ -477,6 +486,19 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.7,
     color: "#415564",
+  },
+  linkedBadge: {
+    minHeight: 24,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    justifyContent: "center",
+  },
+  linkedBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    color: "#2a3a4a",
   },
   noteText: {
     fontSize: 14,

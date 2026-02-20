@@ -96,6 +96,11 @@ function toHighlightColor(value: string): HighlightColor {
   return "yellow";
 }
 
+function toOptionalHighlightColor(value?: string | null): HighlightColor | null {
+  if (value === "green" || value === "blue" || value === "pink" || value === "yellow") return value;
+  return null;
+}
+
 function getStrokeStyle(mode: Mode, toolStyles: Record<ToolKind, { width: number; color: string }>) {
   if (mode === "marker") {
     return { tool: "marker" as ToolKind, ...toolStyles.marker };
@@ -155,6 +160,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [strokeSheetVisible, setStrokeSheetVisible] = useState(false);
   const [linkedNoteId, setLinkedNoteId] = useState<string | null>(null);
   const [linkedNoteText, setLinkedNoteText] = useState("");
+  const [highlightNoteEditorVisible, setHighlightNoteEditorVisible] = useState(false);
 
   const [pendingJumpHighlightId, setPendingJumpHighlightId] = useState<string | null>(null);
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -252,7 +258,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const flashHighlight = useCallback((highlightId: string) => {
     setActiveGlowHighlightId(highlightId);
     if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
-    glowTimerRef.current = setTimeout(() => setActiveGlowHighlightId(null), 900);
+    glowTimerRef.current = setTimeout(() => setActiveGlowHighlightId(null), 1500);
   }, []);
 
   const showMiniToolbarAt = useCallback(
@@ -338,9 +344,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
     const db = await getDB();
     const result = await db.executeSql(
       `SELECT n.id, n.page_number, n.content, n.updated_at, n.highlight_id, n.topic_id,
+          h.color AS highlight_color,
           COALESCE(n.starred, 0) AS starred,
           COALESCE(n.note_kind, 'normal') AS note_kind
         FROM notes n
+        LEFT JOIN highlights h ON h.id = n.highlight_id
         WHERE n.book_id = ?
         ORDER BY n.page_number ASC, n.updated_at DESC`,
       [bookId]
@@ -348,9 +356,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
     const next: ReaderNote[] = [];
     for (let i = 0; i < result[0].rows.length; i++) {
-      const row = result[0].rows.item(i) as ReaderNote;
+      const row = result[0].rows.item(i) as ReaderNote & { highlight_color?: string | null };
       const kind = row.note_kind === "important" || row.note_kind === "doubt" ? row.note_kind : "normal";
-      next.push({ ...row, starred: Number(row.starred) || 0, note_kind: kind });
+      next.push({
+        ...row,
+        highlight_color: toOptionalHighlightColor(row.highlight_color),
+        starred: Number(row.starred) || 0,
+        note_kind: kind,
+      });
     }
     setNotes(next);
   }, [bookId]);
@@ -461,15 +474,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [loadNotes]
   );
 
-  const toggleStarNote = useCallback(
-    async (id: string, starred: number) => {
-      const db = await getDB();
-      const next = starred ? 0 : 1;
-      await db.executeSql("UPDATE notes SET starred = ?, updated_at = ? WHERE id = ?", [next, Date.now(), id]);
-      await loadNotes();
-    },
-    [loadNotes]
-  );
+  const loadLinkedNoteDraft = useCallback(async (highlightId: string) => {
+    const db = await getDB();
+    const result = await db.executeSql("SELECT id, content FROM notes WHERE highlight_id = ? LIMIT 1", [highlightId]);
+    const row = result[0].rows.length ? (result[0].rows.item(0) as { id: string; content: string }) : null;
+    setLinkedNoteId(row?.id ?? null);
+    setLinkedNoteText(row?.content ?? "");
+  }, []);
 
   const toggleBookmark = useCallback(async () => {
     const db = await getDB();
@@ -803,14 +814,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
         showMiniToolbarAt(highlight.x * containerSize.width + (highlight.w * containerSize.width) / 2, highlight.y * containerSize.height);
       }
 
-      const db = await getDB();
-      const result = await db.executeSql("SELECT id, content FROM notes WHERE highlight_id = ? LIMIT 1", [highlight.id]);
-      const row = result[0].rows.length ? (result[0].rows.item(0) as { id: string; content: string }) : null;
-      setLinkedNoteId(row?.id ?? null);
-      setLinkedNoteText(row?.content ?? "");
+      await loadLinkedNoteDraft(highlight.id);
+      setHighlightNoteEditorVisible(false);
       setHighlightSheetVisible(true);
     },
-    [containerSize.height, containerSize.width, flashHighlight, showMiniToolbarAt]
+    [containerSize.height, containerSize.width, flashHighlight, loadLinkedNoteDraft, showMiniToolbarAt]
   );
 
   const saveLinkedNote = useCallback(async () => {
@@ -857,6 +865,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     }
 
     await loadNotes();
+    setHighlightNoteEditorVisible(false);
   }, [bookId, linkedNoteId, linkedNoteText, loadNotes, selectedHighlight]);
 
   const updateHighlightColor = useCallback(
@@ -900,6 +909,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     setSelectedHighlightId(null);
     setLinkedNoteId(null);
     setLinkedNoteText("");
+    setHighlightNoteEditorVisible(false);
     setHighlightSheetVisible(false);
     setMiniToolbar({ visible: false, x: 0, y: 0 });
 
@@ -1131,7 +1141,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
             y={miniToolbar.y}
             color={selectedHighlight?.color ?? "yellow"}
             onAddNote={() => {
-              setHighlightSheetVisible(true);
+              if (!selectedHighlight) return;
+              loadLinkedNoteDraft(selectedHighlight.id)
+                .then(() => {
+                  setHighlightNoteEditorVisible(true);
+                  setHighlightSheetVisible(true);
+                })
+                .catch((e) => console.log("load linked note error", e));
               resetToolbarTimer();
             }}
             onChangeColor={(color) => updateHighlightColor(color).catch((e) => console.log("color update error", e))}
@@ -1248,13 +1264,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
         visible={notesVisible}
         notes={notes}
         currentPage={page}
-        revisionMode={revisionMode}
         onClose={() => setNotesVisible(false)}
         onAddNote={(content, kind) => addPageNote(content, kind).catch((e) => console.log("add note error", e))}
         onPressNote={onPressNote}
         onDeleteNote={(id) => deleteNote(id).catch((e) => console.log("delete note error", e))}
         onUpdateNote={(id, content) => updateNote(id, content).catch((e) => console.log("update note error", e))}
-        onToggleStar={(id, starred) => toggleStarNote(id, starred).catch((e) => console.log("toggle star error", e))}
       />
 
       <TopicsDrawer
@@ -1270,23 +1284,49 @@ export default function ReaderScreen({ route, navigation }: Props) {
         onLongPressTopic={renameOrDeleteTopic}
       />
 
-      <Modal visible={highlightSheetVisible} transparent animationType="fade" onRequestClose={() => setHighlightSheetVisible(false)}>
+      <Modal
+        visible={highlightSheetVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setHighlightSheetVisible(false);
+          setHighlightNoteEditorVisible(false);
+        }}
+      >
         <View style={styles.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setHighlightSheetVisible(false)} />
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              setHighlightSheetVisible(false);
+              setHighlightNoteEditorVisible(false);
+            }}
+          />
           <View style={styles.actionSheet}>
             <Text style={styles.actionSheetTitle}>Highlight Actions</Text>
-
-            <TextInput
-              value={linkedNoteText}
-              onChangeText={setLinkedNoteText}
-              placeholder="Add or edit linked note"
-              multiline
-              style={styles.sheetInput}
-            />
-
-            <Pressable style={styles.sheetPrimaryBtn} onPress={() => saveLinkedNote().catch((e) => console.log("save linked note error", e))}>
-              <Text style={styles.sheetPrimaryBtnText}>Save Note</Text>
+            <Text style={styles.sheetSectionLabel}>Page {selectedHighlight?.page_number ?? page}</Text>
+            <Pressable style={styles.sheetPrimaryBtn} onPress={() => setHighlightNoteEditorVisible(true)}>
+              <Text style={styles.sheetPrimaryBtnText}>{linkedNoteId ? "Edit Note" : "Add Note"}</Text>
             </Pressable>
+
+            {highlightNoteEditorVisible ? (
+              <View style={styles.noteEditorCard}>
+                <TextInput
+                  value={linkedNoteText}
+                  onChangeText={setLinkedNoteText}
+                  placeholder="Write note for this highlight..."
+                  multiline
+                  style={styles.sheetInput}
+                />
+                <View style={styles.noteEditorActions}>
+                  <Pressable style={styles.noteEditorButton} onPress={() => setHighlightNoteEditorVisible(false)}>
+                    <Text style={styles.noteEditorButtonText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable style={styles.noteEditorButtonPrimary} onPress={() => saveLinkedNote().catch((e) => console.log("save linked note error", e))}>
+                    <Text style={styles.noteEditorButtonPrimaryText}>Save</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
 
             <View style={styles.colorLegendRow}>
               {(Object.keys(COLOR_LABELS) as HighlightColor[]).map((item) => (
@@ -1574,6 +1614,49 @@ const styles = StyleSheet.create({
   sheetPrimaryBtnText: {
     color: "#fff",
     fontWeight: "800",
+  },
+  noteEditorCard: {
+    borderWidth: 1,
+    borderColor: "#d8e0e8",
+    borderRadius: 12,
+    padding: 10,
+    gap: 10,
+    backgroundColor: "#f9fcff",
+  },
+  noteEditorActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  noteEditorButton: {
+    minHeight: 38,
+    minWidth: 88,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#c8d4df",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f5f8fb",
+  },
+  noteEditorButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1d3345",
+  },
+  noteEditorButtonPrimary: {
+    minHeight: 38,
+    minWidth: 88,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#2c71d8",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#e6f0ff",
+  },
+  noteEditorButtonPrimaryText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#1458bd",
   },
   colorLegendRow: {
     flexDirection: "row",
