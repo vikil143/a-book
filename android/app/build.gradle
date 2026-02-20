@@ -130,3 +130,12 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// RN 0.82+ New Architecture can generate autolinking CMake entries that point to
+// transient codegen JNI folders under node_modules. Those folders may not exist
+// during `clean`, so skip native clean tasks to keep `./gradlew clean` stable.
+tasks.configureEach { task ->
+    if (task.name.startsWith("externalNativeBuildClean")) {
+        task.enabled = false
+    }
+}

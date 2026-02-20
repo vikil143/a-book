@@ -16,6 +16,7 @@ import {
   type PanGestureHandlerGestureEvent,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
+import { useSharedValue } from "react-native-reanimated";
 import { getDB } from "../db";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import { uid } from "../utils/files";
@@ -27,6 +28,14 @@ import PdfStage from "./reader/PdfStage";
 import HighlightOverlay from "./reader/HighlightOverlay";
 import PenLayer, { type LiveStroke } from "./reader/PenLayer";
 import type { HighlightRow, StrokePoint, StrokeRow, ToolKind } from "./readerTypes";
+import {
+  clamp,
+  distancePx,
+  simulatePressureWidth,
+  toPercentPoint,
+  velocityToWidth,
+  type StrokePointPx,
+} from "./reader/inkUtils";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Reader">;
 
@@ -34,7 +43,7 @@ type BookRow = { id: string; title: string; local_path: string };
 
 type RectPx = { x: number; y: number; w: number; h: number };
 type PointPx = { x: number; y: number };
-type DraftStrokePoint = PointPx & { t: number; v: number };
+type DraftStrokePoint = StrokePointPx;
 
 type TopicEditorState = {
   visible: boolean;
@@ -43,7 +52,7 @@ type TopicEditorState = {
   name: string;
 };
 
-type Mode = "none" | "highlight" | "pen" | "marker" | "underline" | "eraser" | "stroke_select";
+type Mode = "none" | "highlight" | "pen" | "marker" | "highlighter" | "underline" | "eraser" | "stroke_select";
 
 const MIN_RECT_SIZE_PX = 8;
 const MIN_STROKE_POINTS = 2;
@@ -69,10 +78,6 @@ const COLOR_LABELS: Record<HighlightColor, string> = {
   pink: "Doubt",
 };
 
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
-
 function normalizeRectPx(startX: number, startY: number, endX: number, endY: number, width: number, height: number): RectPx {
   const sx = clamp(startX, 0, width);
   const sy = clamp(startY, 0, height);
@@ -91,22 +96,12 @@ function toHighlightColor(value: string): HighlightColor {
   return "yellow";
 }
 
-function pxToPercentPoint(point: PointPx, width: number, height: number): StrokePoint {
-  return {
-    x: clamp(point.x / width, 0, 1),
-    y: clamp(point.y / height, 0, 1),
-  };
-}
-
-function distance(a: PointPx, b: PointPx) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
 function getStrokeStyle(mode: Mode, toolStyles: Record<ToolKind, { width: number; color: string }>) {
   if (mode === "marker") {
     return { tool: "marker" as ToolKind, ...toolStyles.marker };
+  }
+  if (mode === "highlighter") {
+    return { tool: "highlighter" as ToolKind, ...toolStyles.highlighter };
   }
   if (mode === "underline") {
     return { tool: "underline" as ToolKind, ...toolStyles.underline };
@@ -120,11 +115,9 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const pdfRef = useRef<any>(null);
   const drawStartRef = useRef<PointPx | null>(null);
   const strokeDraftRef = useRef<DraftStrokePoint[]>([]);
-  const liveStrokeVersionRef = useRef(0);
-  const liveStrokeFrameRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
-  const pendingLiveStrokeRef = useRef<LiveStroke | null>(null);
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeStrokeSv = useSharedValue<LiveStroke | null>(null);
 
   const [book, setBook] = useState<BookRow | null>(null);
   const [page, setPage] = useState(1);
@@ -144,7 +137,6 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [bookmarks, setBookmarks] = useState<number[]>([]);
 
   const [previewRect, setPreviewRect] = useState<RectPx | null>(null);
-  const [liveStroke, setLiveStroke] = useState<LiveStroke | null>(null);
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
   const [activeGlowHighlightId, setActiveGlowHighlightId] = useState<string | null>(null);
@@ -172,6 +164,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [toolStyles, setToolStyles] = useState<Record<ToolKind, { width: number; color: string }>>({
     pen: { width: 3, color: "#246de0" },
     marker: { width: 12, color: "#ffd84f" },
+    highlighter: { width: 16, color: "#ffe56a" },
     underline: { width: 4, color: "#246de0" },
   });
 
@@ -191,8 +184,9 @@ export default function ReaderScreen({ route, navigation }: Props) {
   }, []);
 
   const highlightMode = mode === "highlight";
-  const penMode = mode === "pen" || mode === "marker" || mode === "underline" || mode === "eraser" || mode === "stroke_select";
-  const drawEnabled = mode === "highlight" || mode === "pen" || mode === "marker" || mode === "underline";
+  const penMode =
+    mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" || mode === "eraser" || mode === "stroke_select";
+  const drawEnabled = mode === "highlight" || mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline";
   const eraseMode = mode === "eraser";
   const strokeSelectMode = mode === "stroke_select";
 
@@ -414,7 +408,6 @@ export default function ReaderScreen({ route, navigation }: Props) {
     return () => {
       if (toolbarTimerRef.current) clearTimeout(toolbarTimerRef.current);
       if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
-      if (liveStrokeFrameRef.current) cancelAnimationFrame(liveStrokeFrameRef.current);
     };
   }, []);
 
@@ -514,11 +507,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     async (pointsPx: DraftStrokePoint[]) => {
       if (pointsPx.length < MIN_STROKE_POINTS || !containerSize.width || !containerSize.height) return;
       const style = getStrokeStyle(mode, toolStyles);
-      const points = pointsPx.map((point) => ({
-        ...pxToPercentPoint(point, containerSize.width, containerSize.height),
-        v: point.v,
-        t: point.t,
-      }));
+      const points = pointsPx.map((point) => toPercentPoint(point, containerSize.width, containerSize.height));
       if (points.length < MIN_STROKE_POINTS) return;
 
       const now = Date.now();
@@ -563,45 +552,55 @@ export default function ReaderScreen({ route, navigation }: Props) {
     drawStartRef.current = null;
     strokeDraftRef.current = [];
     setPreviewRect(null);
-    pendingLiveStrokeRef.current = null;
-    if (liveStrokeFrameRef.current) {
-      cancelAnimationFrame(liveStrokeFrameRef.current);
-      liveStrokeFrameRef.current = null;
-    }
-    setLiveStroke(null);
-  }, []);
+    activeStrokeSv.value = null;
+  }, [activeStrokeSv]);
 
   const pushLiveStrokePreview = useCallback(
     (nextMode: Mode, points: DraftStrokePoint[]) => {
       if (!containerSize.width || !containerSize.height) return;
-      if (!(nextMode === "pen" || nextMode === "marker" || nextMode === "underline")) return;
+      if (!(nextMode === "pen" || nextMode === "marker" || nextMode === "highlighter" || nextMode === "underline")) return;
       const style = getStrokeStyle(nextMode, toolStyles);
-      const percentPoints: StrokePoint[] = points.map((point) => ({
-        ...pxToPercentPoint(point, containerSize.width, containerSize.height),
-        v: point.v,
-        t: point.t,
-      }));
-      liveStrokeVersionRef.current += 1;
-      pendingLiveStrokeRef.current = {
-        version: liveStrokeVersionRef.current,
+      const percentPoints: StrokePoint[] = points.map((point) => toPercentPoint(point, containerSize.width, containerSize.height));
+      activeStrokeSv.value = {
         points: percentPoints,
         color: style.color,
         width: style.width,
         tool: style.tool,
       };
-      if (liveStrokeFrameRef.current) return;
-      liveStrokeFrameRef.current = requestAnimationFrame(() => {
-        liveStrokeFrameRef.current = null;
-        setLiveStroke(pendingLiveStrokeRef.current);
-      });
     },
-    [containerSize.height, containerSize.width, toolStyles]
+    [activeStrokeSv, containerSize.height, containerSize.width, toolStyles]
+  );
+
+  const appendStrokePoint = useCallback(
+    (draft: DraftStrokePoint[], nextPoint: PointPx, tool: ToolKind, baseWidth: number, force?: number) => {
+      const now = Date.now();
+      const previous = draft[draft.length - 1];
+      if (!previous) {
+        const startWidth = velocityToWidth(tool, baseWidth, 0);
+        return [{ x: nextPoint.x, y: nextPoint.y, t: now, v: 0, w: startWidth, force }];
+      }
+      const dist = distancePx(previous, nextPoint);
+      if (dist < 1.1) return draft;
+      const dt = Math.max(1, now - previous.t);
+      const velocity = (dist * 1000) / dt;
+      const nextWidth = simulatePressureWidth({
+        tool,
+        baseWidth,
+        velocity,
+        previousWidth: previous.w || baseWidth,
+        force,
+      });
+      return [...draft, { x: nextPoint.x, y: nextPoint.y, t: now, v: velocity, w: nextWidth, force }];
+    },
+    []
   );
 
   const onDrawGestureEvent = useCallback(
     (event: PanGestureHandlerGestureEvent) => {
       if (!drawEnabled || !containerSize.width || !containerSize.height) return;
-      const { x: rawX, y: rawY, velocityX, velocityY } = event.nativeEvent;
+      const { x: rawX, y: rawY } = event.nativeEvent;
+      const native = event.nativeEvent as unknown as { force?: number };
+      const force = typeof native.force === "number" ? native.force : undefined;
       const outside = rawX < 0 || rawY < 0 || rawX > containerSize.width || rawY > containerSize.height;
       if (outside) {
         resetDrawPreview();
@@ -623,34 +622,35 @@ export default function ReaderScreen({ route, navigation }: Props) {
         const start = drawStartRef.current;
         if (!start) return;
         const now = Date.now();
-        const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+        const speed = 0;
+        const width = toolStyles.underline.width;
         const next: DraftStrokePoint[] = [
-          { x: start.x, y: start.y, t: now - 1, v: speed },
-          { x: current.x, y: current.y, t: now, v: speed },
+          { x: start.x, y: start.y, t: now - 1, v: speed, w: width, force },
+          { x: current.x, y: current.y, t: now, v: speed, w: width, force },
         ];
         strokeDraftRef.current = next;
         pushLiveStrokePreview(mode, next);
         return;
       }
 
-      if (mode === "pen" || mode === "marker") {
+      if (mode === "pen" || mode === "marker" || mode === "highlighter") {
+        const style = getStrokeStyle(mode, toolStyles);
         const draft = strokeDraftRef.current;
-        const prev = draft[draft.length - 1];
-        if (!prev || distance(prev, current) < 1.2) return;
-        const now = Date.now();
-        const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
-        const next = [...draft, { ...current, t: now, v: speed }];
+        const next = appendStrokePoint(draft, current, style.tool, style.width, force);
+        if (next === draft) return;
         strokeDraftRef.current = next;
         pushLiveStrokePreview(mode, next);
       }
     },
-    [containerSize.height, containerSize.width, drawEnabled, mode, pushLiveStrokePreview, resetDrawPreview]
+    [appendStrokePoint, containerSize.height, containerSize.width, drawEnabled, mode, pushLiveStrokePreview, resetDrawPreview, toolStyles]
   );
 
   const onDrawHandlerStateChange = useCallback(
     (event: PanGestureHandlerStateChangeEvent) => {
       if (!drawEnabled || !containerSize.width || !containerSize.height) return;
-      const { state, x: rawX, y: rawY, velocityX, velocityY } = event.nativeEvent;
+      const { state, x: rawX, y: rawY } = event.nativeEvent;
+      const native = event.nativeEvent as unknown as { force?: number };
+      const force = typeof native.force === "number" ? native.force : undefined;
       const outside = rawX < 0 || rawY < 0 || rawX > containerSize.width || rawY > containerSize.height;
       if (outside && (state === State.ACTIVE || state === State.END)) {
         resetDrawPreview();
@@ -660,7 +660,6 @@ export default function ReaderScreen({ route, navigation }: Props) {
         x: clamp(rawX, 0, containerSize.width),
         y: clamp(rawY, 0, containerSize.height),
       };
-      const speed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
 
       if (state === State.BEGAN) {
         if (mode === "highlight") {
@@ -672,17 +671,18 @@ export default function ReaderScreen({ route, navigation }: Props) {
         if (mode === "underline") {
           drawStartRef.current = point;
           const now = Date.now();
+          const width = toolStyles.underline.width;
           const draft = [
-            { x: point.x, y: point.y, t: now - 1, v: speed },
-            { x: point.x, y: point.y, t: now, v: speed },
+            { x: point.x, y: point.y, t: now - 1, v: 0, w: width, force },
+            { x: point.x, y: point.y, t: now, v: 0, w: width, force },
           ];
           strokeDraftRef.current = draft;
           pushLiveStrokePreview(mode, draft);
         }
 
-        if (mode === "pen" || mode === "marker") {
-          const now = Date.now();
-          const draft = [{ x: point.x, y: point.y, t: now, v: speed }];
+        if (mode === "pen" || mode === "marker" || mode === "highlighter") {
+          const style = getStrokeStyle(mode, toolStyles);
+          const draft = appendStrokePoint([], point, style.tool, style.width, force);
           strokeDraftRef.current = draft;
           pushLiveStrokePreview(mode, draft);
         }
@@ -714,21 +714,20 @@ export default function ReaderScreen({ route, navigation }: Props) {
             return;
           }
           const now = Date.now();
+          const width = toolStyles.underline.width;
           const draft = [
-            { x: start.x, y: start.y, t: now - 1, v: speed },
-            { x: point.x, y: point.y, t: now, v: speed },
+            { x: start.x, y: start.y, t: now - 1, v: 0, w: width, force },
+            { x: point.x, y: point.y, t: now, v: 0, w: width, force },
           ];
           saveStroke(draft).catch((e) => console.log("save underline error", e));
           resetDrawPreview();
           return;
         }
 
-        if (mode === "pen" || mode === "marker") {
-          const draft = strokeDraftRef.current;
-          const prev = draft[draft.length - 1];
-          const now = Date.now();
-          if (!prev || distance(prev, point) >= 1.2) draft.push({ x: point.x, y: point.y, t: now, v: speed });
-          saveStroke(draft).catch((e) => console.log("save stroke error", e));
+        if (mode === "pen" || mode === "marker" || mode === "highlighter") {
+          const style = getStrokeStyle(mode, toolStyles);
+          const completed = appendStrokePoint(strokeDraftRef.current, point, style.tool, style.width, force);
+          saveStroke(completed).catch((e) => console.log("save stroke error", e));
           resetDrawPreview();
         }
         return;
@@ -742,11 +741,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
       containerSize.height,
       containerSize.width,
       drawEnabled,
+      appendStrokePoint,
       finishHighlightDraw,
       mode,
       pushLiveStrokePreview,
       resetDrawPreview,
       saveStroke,
+      toolStyles,
     ]
   );
 
@@ -1021,7 +1022,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
         }}
         onTogglePen={() => {
           setMode((prev) => {
-            if (prev === "pen" || prev === "marker" || prev === "underline" || prev === "eraser" || prev === "stroke_select") {
+            if (
+              prev === "pen" ||
+              prev === "marker" ||
+              prev === "highlighter" ||
+              prev === "underline" ||
+              prev === "eraser" ||
+              prev === "stroke_select"
+            ) {
               resetDrawPreview();
               return "none";
             }
@@ -1058,7 +1066,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
             width={containerSize.width}
             height={containerSize.height}
             strokes={visibleStrokes}
-            activeStroke={liveStroke}
+            activeStroke={activeStrokeSv}
             eraseMode={eraseMode}
             selectable={strokeSelectMode}
             onPressStroke={onPressStroke}
@@ -1110,6 +1118,12 @@ export default function ReaderScreen({ route, navigation }: Props) {
                 <Text style={styles.penPaletteText}>Marker</Text>
               </Pressable>
               <Pressable
+                style={[styles.penPaletteBtn, mode === "highlighter" ? styles.penPaletteBtnActive : null]}
+                onPress={() => setMode("highlighter")}
+              >
+                <Text style={styles.penPaletteText}>Highlighter</Text>
+              </Pressable>
+              <Pressable
                 style={[styles.penPaletteBtn, mode === "underline" ? styles.penPaletteBtnActive : null]}
                 onPress={() => setMode("underline")}
               >
@@ -1127,14 +1141,15 @@ export default function ReaderScreen({ route, navigation }: Props) {
               >
                 <Text style={styles.penPaletteText}>Select</Text>
               </Pressable>
-              {(mode === "pen" || mode === "marker" || mode === "underline") ? (
+              {(mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline") ? (
                 <>
                   <View style={styles.toolAdjustRow}>
                     <Pressable
                       style={styles.toolAdjustBtn}
                       onPress={() =>
                         setToolStyles((prev) => {
-                          const current = mode === "pen" || mode === "marker" || mode === "underline" ? mode : "pen";
+                          const current =
+                            mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
                           return {
                             ...prev,
                             [current]: { ...prev[current], width: clamp(prev[current].width - 1, 1, 36) },
@@ -1145,13 +1160,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
                       <Text style={styles.toolAdjustText}>-</Text>
                     </Pressable>
                     <Text style={styles.toolAdjustLabel}>
-                      {`${Math.round((mode === "pen" || mode === "marker" || mode === "underline" ? toolStyles[mode].width : toolStyles.pen.width) * 10) / 10}px`}
+                      {`${Math.round((mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? toolStyles[mode].width : toolStyles.pen.width) * 10) / 10}px`}
                     </Text>
                     <Pressable
                       style={styles.toolAdjustBtn}
                       onPress={() =>
                         setToolStyles((prev) => {
-                          const current = mode === "pen" || mode === "marker" || mode === "underline" ? mode : "pen";
+                          const current =
+                            mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
                           return {
                             ...prev,
                             [current]: { ...prev[current], width: clamp(prev[current].width + 1, 1, 36) },
@@ -1165,7 +1181,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
                   <View style={styles.colorSwatchRow}>
                     {["#246de0", "#1f2630", "#e24b4b", "#2b9f55", "#7d4fe0", "#d18f24"].map((color) => {
-                      const activeKey = mode === "pen" || mode === "marker" || mode === "underline" ? mode : "pen";
+                      const activeKey =
+                        mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
                       const selected = toolStyles[activeKey].color === color;
                       return (
                         <Pressable
@@ -1287,7 +1304,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setStrokeSheetVisible(false)} />
           <View style={styles.actionSheet}>
             <Text style={styles.actionSheetTitle}>
-              {selectedStroke?.tool === "marker" ? "Marker" : selectedStroke?.tool === "underline" ? "Underline" : "Pen"} Stroke
+              {selectedStroke?.tool === "marker"
+                ? "Marker"
+                : selectedStroke?.tool === "highlighter"
+                  ? "Highlighter"
+                  : selectedStroke?.tool === "underline"
+                    ? "Underline"
+                    : "Pen"}{" "}
+              Stroke
             </Text>
 
             <Text style={styles.sheetSectionLabel}>Assign Topic</Text>
