@@ -25,8 +25,8 @@ import NotesBottomSheet, { type ReaderNote } from "../components/NotesBottomShee
 import TopicsDrawer, { type ReaderTopic } from "../components/TopicsDrawer";
 import HighlightMiniToolbar, { type HighlightColor } from "../components/HighlightMiniToolbar";
 import PdfStage from "./reader/PdfStage";
-import HighlightOverlay from "./reader/HighlightOverlay";
-import PenLayer, { type LiveStroke } from "./reader/PenLayer";
+import OverlayRoot from "./reader/OverlayRoot";
+import { type LiveStroke } from "./reader/PenLayer";
 import type { HighlightRow, StrokePoint, StrokeRow, ToolKind } from "./readerTypes";
 import {
   clamp,
@@ -183,12 +183,20 @@ export default function ReaderScreen({ route, navigation }: Props) {
     Alert.alert("PDF Error", "Could not open this PDF on device.");
   }, []);
 
+  const onStageLayoutSize = useCallback((size: { width: number; height: number }) => {
+    setContainerSize((prev) => {
+      if (prev.width === size.width && prev.height === size.height) return prev;
+      return size;
+    });
+  }, []);
+
   const highlightMode = mode === "highlight";
   const penMode =
     mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" || mode === "eraser" || mode === "stroke_select";
   const drawEnabled = mode === "highlight" || mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline";
   const eraseMode = mode === "eraser";
   const strokeSelectMode = mode === "stroke_select";
+  const overlayCaptureEnabled = drawEnabled || eraseMode || strokeSelectMode;
 
   const selectedHighlight = useMemo(
     () => highlights.find((item) => item.id === selectedHighlightId) ?? null,
@@ -1045,51 +1053,51 @@ export default function ReaderScreen({ route, navigation }: Props) {
         <PdfStage
           source={source}
           pdfRef={pdfRef}
+          pageNumber={page}
+          totalPages={totalPages}
           scrollEnabled={!penMode}
-          onLayoutSize={setContainerSize}
+          onLayoutSize={onStageLayoutSize}
           onLoadComplete={setTotalPages}
           onPageChanged={setPage}
           onError={onPdfError}
+          renderOverlay={(metrics) => (
+            <OverlayRoot
+              pageNumber={metrics.pageNumber}
+              containerWidth={metrics.containerWidth}
+              containerHeight={metrics.containerHeight}
+              highlights={visibleHighlights}
+              strokes={visibleStrokes}
+              activeHighlightId={activeGlowHighlightId}
+              highlightDisabled={highlightMode}
+              activeStroke={activeStrokeSv}
+              eraseMode={eraseMode}
+              strokeSelectable={strokeSelectMode}
+              captureGestures={overlayCaptureEnabled}
+              onPressHighlight={(item) => openHighlightActions(item).catch((e) => console.log("open highlight error", e))}
+              onPressStroke={onPressStroke}
+            >
+              {previewRect ? (
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.previewRect,
+                    { left: previewRect.x, top: previewRect.y, width: previewRect.w, height: previewRect.h },
+                  ]}
+                />
+              ) : null}
+
+              <PanGestureHandler
+                enabled={drawEnabled}
+                onGestureEvent={onDrawGestureEvent}
+                onHandlerStateChange={onDrawHandlerStateChange}
+              >
+                <View style={StyleSheet.absoluteFillObject} pointerEvents={drawEnabled ? "auto" : "none"} />
+              </PanGestureHandler>
+            </OverlayRoot>
+          )}
         />
 
         <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
-          <HighlightOverlay
-            width={containerSize.width}
-            height={containerSize.height}
-            highlights={visibleHighlights}
-            activeHighlightId={activeGlowHighlightId}
-            disabled={highlightMode}
-            onPressHighlight={(item) => openHighlightActions(item).catch((e) => console.log("open highlight error", e))}
-          />
-
-          <PenLayer
-            width={containerSize.width}
-            height={containerSize.height}
-            strokes={visibleStrokes}
-            activeStroke={activeStrokeSv}
-            eraseMode={eraseMode}
-            selectable={strokeSelectMode}
-            onPressStroke={onPressStroke}
-          />
-
-          {previewRect ? (
-            <View
-              pointerEvents="none"
-              style={[
-                styles.previewRect,
-                { left: previewRect.x, top: previewRect.y, width: previewRect.w, height: previewRect.h },
-              ]}
-            />
-          ) : null}
-
-          <PanGestureHandler
-            enabled={drawEnabled}
-            onGestureEvent={onDrawGestureEvent}
-            onHandlerStateChange={onDrawHandlerStateChange}
-          >
-            <View style={StyleSheet.absoluteFillObject} pointerEvents={drawEnabled ? "auto" : "none"} />
-          </PanGestureHandler>
-
           <HighlightMiniToolbar
             visible={miniToolbar.visible && !!selectedHighlight}
             x={miniToolbar.x}
