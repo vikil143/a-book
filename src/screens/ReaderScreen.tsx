@@ -9,6 +9,7 @@ import {
   View,
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useFocusEffect } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   PanGestureHandler,
@@ -24,6 +25,8 @@ import TopToolbar from "../components/TopToolbar";
 import NotesBottomSheet, { type ReaderNote } from "../components/NotesBottomSheet";
 import TopicsDrawer, { type ReaderTopic } from "../components/TopicsDrawer";
 import HighlightMiniToolbar, { type HighlightColor } from "../components/HighlightMiniToolbar";
+import MarksRail from "../components/MarksRail";
+import { getBookMarksSummary, type PageMarksSummary } from "../db/marksSummary";
 import PdfStage from "./reader/PdfStage";
 import OverlayRoot from "./reader/OverlayRoot";
 import { type LiveStroke } from "./reader/PenLayer";
@@ -124,6 +127,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeStrokeSv = useSharedValue<LiveStroke | null>(null);
+  const railCurrentPageSv = useSharedValue(1);
   const previewRectXSv = useSharedValue(0);
   const previewRectYSv = useSharedValue(0);
   const previewRectWSv = useSharedValue(0);
@@ -147,6 +151,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const [strokes, setStrokes] = useState<StrokeRow[]>([]);
   const [topics, setTopics] = useState<ReaderTopic[]>([]);
   const [bookmarks, setBookmarks] = useState<number[]>([]);
+  const [marksSummary, setMarksSummary] = useState<PageMarksSummary[]>([]);
 
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
@@ -343,6 +348,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
     setBookmarks(next);
   }, [bookId]);
 
+  const loadMarksSummary = useCallback(async () => {
+    const summary = await getBookMarksSummary(bookId);
+    setMarksSummary(summary);
+  }, [bookId]);
+
   const loadNotes = useCallback(async () => {
     const db = await getDB();
     const result = await db.executeSql(
@@ -424,11 +434,22 @@ export default function ReaderScreen({ route, navigation }: Props) {
     loadNotes().catch((e) => console.log("load notes error", e));
     loadTopics().catch((e) => console.log("load topics error", e));
     loadBookmarks().catch((e) => console.log("load bookmarks error", e));
-  }, [loadBook, loadBookmarks, loadNotes, loadTopics]);
+    loadMarksSummary().catch((e) => console.log("load marks summary error", e));
+  }, [loadBook, loadBookmarks, loadMarksSummary, loadNotes, loadTopics]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadMarksSummary().catch((e) => console.log("focus marks summary error", e));
+    }, [loadMarksSummary])
+  );
 
   useEffect(() => {
     loadPageAnnotations(page).catch((e) => console.log("load annotations error", e));
   }, [loadPageAnnotations, page]);
+
+  useEffect(() => {
+    railCurrentPageSv.value = page;
+  }, [page, railCurrentPageSv]);
 
   useEffect(() => {
     if (!pendingJumpHighlightId) return;
@@ -495,8 +516,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
         [uid(), bookId, page, Date.now()]
       );
     }
-    await loadBookmarks();
-  }, [bookId, bookmarks, loadBookmarks, page]);
+    await Promise.all([loadBookmarks(), loadMarksSummary()]);
+  }, [bookId, bookmarks, loadBookmarks, loadMarksSummary, page]);
 
   const saveHighlight = useCallback(
     async (rect: RectPx) => {
@@ -518,13 +539,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
       );
 
       setHighlights((prev) => [...prev, { id, book_id: bookId, page_number: page, x, y, w, h, color: "yellow", topic_id: activeTopicId, created_at: now, updated_at: now }]);
-      await loadTopics();
+      await Promise.all([loadTopics(), loadMarksSummary()]);
 
       setSelectedHighlightId(id);
       flashHighlight(id);
       showMiniToolbarAt(rect.x + rect.w / 2, rect.y);
     },
-    [activeTopicId, bookId, containerSize.height, containerSize.width, flashHighlight, loadTopics, page, showMiniToolbarAt]
+    [activeTopicId, bookId, containerSize.height, containerSize.width, flashHighlight, loadMarksSummary, loadTopics, page, showMiniToolbarAt]
   );
 
   const finishHighlightDraw = useCallback(
@@ -576,9 +597,9 @@ export default function ReaderScreen({ route, navigation }: Props) {
       );
 
       setStrokes((prev) => [...prev, stroke]);
-      await loadTopics();
+      await Promise.all([loadTopics(), loadMarksSummary()]);
     },
-    [activeTopicId, bookId, containerSize.height, containerSize.width, loadTopics, mode, page, toolStyles]
+    [activeTopicId, bookId, containerSize.height, containerSize.width, loadMarksSummary, loadTopics, mode, page, toolStyles]
   );
 
   const resetDrawPreview = useCallback(() => {
@@ -916,8 +937,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
     setHighlightSheetVisible(false);
     setMiniToolbar({ visible: false, x: 0, y: 0 });
 
-    await Promise.all([loadNotes(), loadTopics()]);
-  }, [loadNotes, loadTopics, selectedHighlightId]);
+    await Promise.all([loadNotes(), loadTopics(), loadMarksSummary()]);
+  }, [loadMarksSummary, loadNotes, loadTopics, selectedHighlightId]);
 
   const onPressStroke = useCallback(
     (stroke: StrokeRow) => {
@@ -926,7 +947,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
           const db = await getDB();
           await db.executeSql("DELETE FROM strokes WHERE id = ?", [stroke.id]);
           setStrokes((prev) => prev.filter((item) => item.id !== stroke.id));
-          await loadTopics();
+          await Promise.all([loadTopics(), loadMarksSummary()]);
         };
         removeStroke().catch((e) => console.log("erase stroke error", e));
         return;
@@ -936,7 +957,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       setSelectedStrokeId(stroke.id);
       setStrokeSheetVisible(true);
     },
-    [loadTopics, mode]
+    [loadMarksSummary, loadTopics, mode]
   );
 
   const deleteSelectedStroke = useCallback(async () => {
@@ -946,8 +967,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
     setStrokes((prev) => prev.filter((item) => item.id !== selectedStrokeId));
     setSelectedStrokeId(null);
     setStrokeSheetVisible(false);
-    await loadTopics();
-  }, [loadTopics, selectedStrokeId]);
+    await Promise.all([loadTopics(), loadMarksSummary()]);
+  }, [loadMarksSummary, loadTopics, selectedStrokeId]);
 
   const assignTopicToSelectedStroke = useCallback(
     async (topicId: string | null) => {
@@ -961,23 +982,39 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [loadTopics, selectedStrokeId]
   );
 
-  const onPressNote = useCallback(
-    (note: ReaderNote) => {
+  const jumpToPage = useCallback(
+    (targetPage: number) => {
+      const nextPage = clamp(Math.round(targetPage), 1, Math.max(1, totalPages));
       try {
         if (pdfRef.current && typeof (pdfRef.current as { setPage?: (pageNumber: number) => void }).setPage === "function") {
-          (pdfRef.current as { setPage: (pageNumber: number) => void }).setPage(note.page_number);
+          (pdfRef.current as { setPage: (pageNumber: number) => void }).setPage(nextPage);
         }
       } catch (e) {
         console.log("set page error", e);
       }
+      railCurrentPageSv.value = nextPage;
+      setPage(nextPage);
+    },
+    [railCurrentPageSv, totalPages]
+  );
 
-      setPage(note.page_number);
+  const onPdfPageChanged = useCallback(
+    (nextPage: number) => {
+      railCurrentPageSv.value = nextPage;
+      setPage(nextPage);
+    },
+    [railCurrentPageSv]
+  );
+
+  const onPressNote = useCallback(
+    (note: ReaderNote) => {
+      jumpToPage(note.page_number);
       if (note.highlight_id) {
         setPendingJumpHighlightId(note.highlight_id);
       }
       setNotesVisible(false);
     },
-    []
+    [jumpToPage]
   );
 
   const toggleTopicVisibility = useCallback(
@@ -1110,7 +1147,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
           scrollEnabled={!penMode}
           onLayoutSize={onStageLayoutSize}
           onLoadComplete={setTotalPages}
-          onPageChanged={setPage}
+          onPageChanged={onPdfPageChanged}
           onError={onPdfError}
           renderOverlay={(metrics) => (
             <OverlayRoot
@@ -1142,6 +1179,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
         />
 
         <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
+          <MarksRail
+            totalPages={totalPages}
+            currentPage={page}
+            currentPageSv={railCurrentPageSv}
+            marksSummary={marksSummary}
+            onJumpToPage={jumpToPage}
+          />
+
           <HighlightMiniToolbar
             visible={miniToolbar.visible && !!selectedHighlight}
             x={miniToolbar.x}
