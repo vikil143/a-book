@@ -15,6 +15,7 @@ type Props = {
   onTogglePen: () => void;
   onToggleBookmark: () => void;
   onPressTopics: () => void;
+  onPressExport: () => void;
   onToggleRevision: () => void;
   onToggleRevisionImportantOnly: () => void;
 };
@@ -55,6 +56,7 @@ const TopToolbar = React.memo(function TopToolbar({
   onTogglePen,
   onToggleBookmark,
   onPressTopics,
+  onPressExport,
   onToggleRevision,
   onToggleRevisionImportantOnly,
 }: Props) {
@@ -78,6 +80,7 @@ const TopToolbar = React.memo(function TopToolbar({
           <ToolbarButton label="Pen" active={penMode} onPress={onTogglePen} />
           <ToolbarButton label="Mark" active={isBookmarked} onPress={onToggleBookmark} />
           <ToolbarButton label="Topics" onPress={onPressTopics} />
+          <ToolbarButton label="Export" onPress={onPressExport} />
           <ToolbarButton label="Rev" active={revisionMode} onPress={onToggleRevision} />
         </View>
       </View>

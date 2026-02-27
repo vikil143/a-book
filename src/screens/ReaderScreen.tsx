@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -27,10 +30,12 @@ import TopicsDrawer, { type ReaderTopic } from "../components/TopicsDrawer";
 import HighlightMiniToolbar, { type HighlightColor } from "../components/HighlightMiniToolbar";
 import MarksRail from "../components/MarksRail";
 import { getBookMarksSummary, type PageMarksSummary } from "../db/marksSummary";
+import RNFS from "react-native-fs";
 import PdfStage from "./reader/PdfStage";
 import OverlayRoot from "./reader/OverlayRoot";
 import { type LiveStroke } from "./reader/PenLayer";
 import type { HighlightRow, StrokePoint, StrokeRow, ToolKind } from "./readerTypes";
+import { ExportCancelledError, ExportPageError, exportAnnotatedPdf } from "../utils/exportAnnotatedPdf";
 import {
   clamp,
   distancePx,
@@ -56,10 +61,21 @@ type TopicEditorState = {
   color: string;
 };
 
+type ExportState = {
+  visible: boolean;
+  status: "idle" | "running" | "success" | "error";
+  progressPct: number;
+  pageNumber: number;
+  totalPages: number;
+  outputPath: string | null;
+  errorMessage: string | null;
+};
+
 type Mode = "none" | "highlight" | "pen" | "marker" | "highlighter" | "underline" | "eraser" | "stroke_select";
 
 const MIN_RECT_SIZE_PX = 8;
 const MIN_STROKE_POINTS = 2;
+const EXPORTS_DIR = `${RNFS.DocumentDirectoryPath}/exports`;
 
 const TOPIC_PRESET: Array<{ name: string; color: string }> = [
   { name: "Important", color: "#ffd84f" },
@@ -126,6 +142,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const strokeDraftRef = useRef<DraftStrokePoint[]>([]);
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exportCancelRef = useRef(false);
   const activeStrokeSv = useSharedValue<LiveStroke | null>(null);
   const railCurrentPageSv = useSharedValue(1);
   const previewRectXSv = useSharedValue(0);
@@ -178,6 +195,15 @@ export default function ReaderScreen({ route, navigation }: Props) {
     topicId: null,
     name: "",
     color: TOPIC_PRESET[0].color,
+  });
+  const [exportState, setExportState] = useState<ExportState>({
+    visible: false,
+    status: "idle",
+    progressPct: 0,
+    pageNumber: 0,
+    totalPages: 0,
+    outputPath: null,
+    errorMessage: null,
   });
   const [toolStyles, setToolStyles] = useState<Record<ToolKind, { width: number; color: string }>>({
     pen: { width: 3, color: "#246de0" },
@@ -1089,6 +1115,120 @@ export default function ReaderScreen({ route, navigation }: Props) {
     await loadTopics();
   }, [bookId, loadTopics, topicEditor, topics.length]);
 
+  const closeExportModal = useCallback(() => {
+    if (exportState.status === "running") return;
+    setExportState({
+      visible: false,
+      status: "idle",
+      progressPct: 0,
+      pageNumber: 0,
+      totalPages: 0,
+      outputPath: null,
+      errorMessage: null,
+    });
+  }, [exportState.status]);
+
+  const openExportedPdf = useCallback(async () => {
+    if (!exportState.outputPath) return;
+    const fileUrl = exportState.outputPath.startsWith("file://") ? exportState.outputPath : `file://${exportState.outputPath}`;
+    const supported = await Linking.canOpenURL(fileUrl);
+    if (!supported) {
+      Alert.alert("Open failed", "This device could not open the exported PDF directly.");
+      return;
+    }
+    await Linking.openURL(fileUrl);
+  }, [exportState.outputPath]);
+
+  const shareExportedPdf = useCallback(async () => {
+    if (!book || !exportState.outputPath) return;
+    const fileUrl = exportState.outputPath.startsWith("file://") ? exportState.outputPath : `file://${exportState.outputPath}`;
+    await Share.share({
+      title: `${book.title} annotated PDF`,
+      url: fileUrl,
+      message: `Annotated PDF for ${book.title}`,
+    });
+  }, [book, exportState.outputPath]);
+
+  const startExport = useCallback(async () => {
+    if (exportState.status === "running") return;
+    if (!book || !book.local_path) {
+      Alert.alert("Export failed", "Original PDF path is missing for this book.");
+      return;
+    }
+
+    exportCancelRef.current = false;
+    setExportState({
+      visible: true,
+      status: "running",
+      progressPct: 0,
+      pageNumber: 0,
+      totalPages: 0,
+      outputPath: null,
+      errorMessage: null,
+    });
+
+    try {
+      const result = await exportAnnotatedPdf({
+        bookId,
+        inputPdfPath: book.local_path,
+        outputDir: EXPORTS_DIR,
+        referencePageSizePx: {
+          width: Math.max(1, containerSize.width),
+          height: Math.max(1, containerSize.height),
+        },
+        onProgress: ({ pageNumber, totalPages, progressPct }) => {
+          setExportState((prev) => ({
+            ...prev,
+            visible: true,
+            status: "running",
+            pageNumber,
+            totalPages,
+            progressPct,
+          }));
+        },
+        shouldCancel: () => exportCancelRef.current,
+      });
+
+      setExportState((prev) => ({
+        ...prev,
+        visible: true,
+        status: "success",
+        progressPct: 100,
+        outputPath: result.outputPath,
+        errorMessage: null,
+      }));
+    } catch (error) {
+      if (error instanceof ExportCancelledError) {
+        setExportState({
+          visible: false,
+          status: "idle",
+          progressPct: 0,
+          pageNumber: 0,
+          totalPages: 0,
+          outputPath: null,
+          errorMessage: null,
+        });
+        Alert.alert("Export cancelled", "Annotated PDF export was cancelled.");
+        return;
+      }
+
+      const message =
+        error instanceof ExportPageError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : "Could not export the annotated PDF.";
+
+      setExportState((prev) => ({
+        ...prev,
+        visible: true,
+        status: "error",
+        errorMessage: message,
+      }));
+      Alert.alert("Export failed", message);
+    }
+  }, [book, bookId, containerSize.height, containerSize.width, exportState.status]);
+
   if (!book || !source) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -1134,6 +1274,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         }}
         onToggleBookmark={() => toggleBookmark().catch((e) => console.log("bookmark error", e))}
         onPressTopics={() => setTopicsVisible(true)}
+        onPressExport={() => startExport().catch((e) => console.log("export error", e))}
         onToggleRevision={() => setRevisionMode((prev) => !prev)}
         onToggleRevisionImportantOnly={() => setRevisionImportantOnly((prev) => !prev)}
       />
@@ -1513,6 +1654,68 @@ export default function ReaderScreen({ route, navigation }: Props) {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={exportState.visible} transparent animationType="fade" onRequestClose={closeExportModal}>
+        <View style={styles.overlay}>
+          {exportState.status === "running" ? null : <Pressable style={StyleSheet.absoluteFill} onPress={closeExportModal} />}
+          <View style={styles.exportCard}>
+            <Text style={styles.exportTitle}>
+              {exportState.status === "success"
+                ? "Export complete"
+                : exportState.status === "error"
+                  ? "Export failed"
+                  : "Exporting annotated PDF"}
+            </Text>
+
+            {exportState.status === "running" ? (
+              <>
+                <ActivityIndicator size="small" color="#1f6fde" />
+                <Text style={styles.exportSubtitle}>
+                  Exporting page {Math.max(exportState.pageNumber, 1)} of {Math.max(exportState.totalPages, totalPages, 1)}
+                </Text>
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${clamp(exportState.progressPct, 0, 100)}%` }]} />
+                </View>
+                <Text style={styles.progressLabel}>{clamp(exportState.progressPct, 0, 100)}%</Text>
+                <Pressable
+                  style={styles.sheetDangerBtn}
+                  onPress={() => {
+                    exportCancelRef.current = true;
+                  }}
+                >
+                  <Text style={styles.sheetDangerBtnText}>Cancel</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {exportState.status === "success" ? (
+              <>
+                <Text style={styles.exportSubtitle}>Saved to {exportState.outputPath}</Text>
+                <View style={styles.exportActionsRow}>
+                  <Pressable style={styles.exportSecondaryBtn} onPress={() => openExportedPdf().catch((e) => console.log("open export error", e))}>
+                    <Text style={styles.exportSecondaryBtnText}>Open</Text>
+                  </Pressable>
+                  <Pressable style={styles.exportPrimaryBtn} onPress={() => shareExportedPdf().catch((e) => console.log("share export error", e))}>
+                    <Text style={styles.exportPrimaryBtnText}>Share</Text>
+                  </Pressable>
+                </View>
+                <Pressable style={styles.topicEditorButton} onPress={closeExportModal}>
+                  <Text style={styles.topicEditorButtonText}>Close</Text>
+                </Pressable>
+              </>
+            ) : null}
+
+            {exportState.status === "error" ? (
+              <>
+                <Text style={styles.exportSubtitle}>{exportState.errorMessage ?? "Could not export the annotated PDF."}</Text>
+                <Pressable style={styles.exportPrimaryBtn} onPress={closeExportModal}>
+                  <Text style={styles.exportPrimaryBtnText}>Close</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1845,5 +2048,70 @@ const styles = StyleSheet.create({
   topicEditorPrimaryText: {
     fontWeight: "800",
     color: "#1458bd",
+  },
+  exportCard: {
+    marginHorizontal: 20,
+    marginBottom: 24,
+    borderRadius: 18,
+    backgroundColor: "#fff",
+    padding: 16,
+    gap: 12,
+  },
+  exportTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#112334",
+  },
+  exportSubtitle: {
+    fontSize: 13,
+    color: "#405262",
+    lineHeight: 19,
+  },
+  progressTrack: {
+    height: 10,
+    borderRadius: 999,
+    backgroundColor: "#e5edf6",
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#1f6fde",
+  },
+  progressLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#1f6fde",
+    textAlign: "right",
+  },
+  exportActionsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  exportPrimaryBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: "#1f6fde",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  exportPrimaryBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+  },
+  exportSecondaryBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#c9d5df",
+    backgroundColor: "#f6f9fc",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  exportSecondaryBtnText: {
+    color: "#1d3345",
+    fontWeight: "700",
   },
 });
