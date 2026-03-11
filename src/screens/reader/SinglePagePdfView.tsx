@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { FlingGestureHandler, Directions, State } from "react-native-gesture-handler";
 import PdfStage, { type PdfStageMetrics } from "./PdfStage";
@@ -33,21 +33,42 @@ function SinglePagePdfView({
   renderOverlay,
 }: Props) {
   const pageBadge = useMemo(() => `${pageNumber} / ${Math.max(totalPages, 1)}`, [pageNumber, totalPages]);
+  const pageTurnLockRef = useRef(false);
+  const pageTurnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pageTurnTimerRef.current) clearTimeout(pageTurnTimerRef.current);
+    };
+  }, []);
+
+  const withPageTurnLock = useCallback(
+    (action: () => void) => {
+      if (pageTurnLockRef.current) return;
+      pageTurnLockRef.current = true;
+      action();
+      if (pageTurnTimerRef.current) clearTimeout(pageTurnTimerRef.current);
+      pageTurnTimerRef.current = setTimeout(() => {
+        pageTurnLockRef.current = false;
+      }, 220);
+    },
+    []
+  );
 
   const onSwipeLeft = useCallback(
     ({ nativeEvent }: { nativeEvent: { state: number } }) => {
       if (interactionLocked || nativeEvent.state !== State.END || pageNumber >= totalPages) return;
-      onNextPage();
+      withPageTurnLock(onNextPage);
     },
-    [interactionLocked, onNextPage, pageNumber, totalPages]
+    [interactionLocked, onNextPage, pageNumber, totalPages, withPageTurnLock]
   );
 
   const onSwipeRight = useCallback(
     ({ nativeEvent }: { nativeEvent: { state: number } }) => {
       if (interactionLocked || nativeEvent.state !== State.END || pageNumber <= 1) return;
-      onPreviousPage();
+      withPageTurnLock(onPreviousPage);
     },
-    [interactionLocked, onPreviousPage, pageNumber]
+    [interactionLocked, onPreviousPage, pageNumber, withPageTurnLock]
   );
 
   return (
@@ -66,9 +87,9 @@ function SinglePagePdfView({
                 pdfRef={pdfRef}
                 pageNumber={pageNumber}
                 totalPages={totalPages}
-                scrollEnabled={!interactionLocked}
-                horizontal
-                enablePaging
+                scrollEnabled={false}
+                horizontal={false}
+                enablePaging={false}
                 fitPolicy={2}
                 showsHorizontalScrollIndicator={false}
                 showsVerticalScrollIndicator={false}

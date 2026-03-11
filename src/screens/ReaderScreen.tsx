@@ -152,6 +152,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const { bookId } = route.params;
 
   const pdfRef = useRef<any>(null);
+  const pageRef = useRef(1);
   const drawStartRef = useRef<PointPx | null>(null);
   const strokeDraftRef = useRef<DraftStrokePoint[]>([]);
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -231,6 +232,10 @@ export default function ReaderScreen({ route, navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({ headerShown: false });
   }, [navigation]);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
 
   const source = useMemo(() => {
     if (!book) return null;
@@ -1107,13 +1112,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const jumpToPage = useCallback(
     (targetPage: number) => {
       const nextPage = clamp(Math.round(targetPage), 1, Math.max(1, totalPages));
-      try {
-        if (pdfRef.current && typeof (pdfRef.current as { setPage?: (pageNumber: number) => void }).setPage === "function") {
-          (pdfRef.current as { setPage: (pageNumber: number) => void }).setPage(nextPage);
-        }
-      } catch (e) {
-        console.log("set page error", e);
-      }
+      if (nextPage === pageRef.current) return;
+      pageRef.current = nextPage;
       railCurrentPageSv.value = nextPage;
       setPage(nextPage);
     },
@@ -1130,6 +1130,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   const onPdfPageChanged = useCallback(
     (nextPageNumber: number) => {
+      if (nextPageNumber === pageRef.current) return;
+      pageRef.current = nextPageNumber;
       railCurrentPageSv.value = nextPageNumber;
       setPage(nextPageNumber);
     },
