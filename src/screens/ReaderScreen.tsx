@@ -29,9 +29,9 @@ import NotesBottomSheet, { type ReaderNote } from "../components/NotesBottomShee
 import TopicsDrawer, { type ReaderTopic } from "../components/TopicsDrawer";
 import HighlightMiniToolbar, { type HighlightColor } from "../components/HighlightMiniToolbar";
 import MarksRail from "../components/MarksRail";
+import PageNavigationBar from "../components/PageNavigationBar";
 import { getBookMarksSummary, type PageMarksSummary } from "../db/marksSummary";
 import RNFS from "react-native-fs";
-import PdfStage from "./reader/PdfStage";
 import OverlayRoot from "./reader/OverlayRoot";
 import { type LiveStroke } from "./reader/PenLayer";
 import type { HighlightRow, StrokePoint, StrokeRow, ToolKind } from "./readerTypes";
@@ -44,6 +44,7 @@ import {
   velocityToWidth,
   type StrokePointPx,
 } from "./reader/inkUtils";
+import SinglePagePdfView from "./reader/SinglePagePdfView";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Reader">;
 
@@ -71,6 +72,11 @@ type ExportState = {
   errorMessage: string | null;
 };
 
+type PageAnnotationsCacheEntry = {
+  highlights: HighlightRow[];
+  strokes: StrokeRow[];
+};
+
 type Mode = "none" | "highlight" | "pen" | "marker" | "highlighter" | "underline" | "eraser" | "stroke_select";
 
 const MIN_RECT_SIZE_PX = 8;
@@ -96,6 +102,13 @@ const COLOR_LABELS: Record<HighlightColor, string> = {
   green: "Definition",
   blue: "Concept",
   pink: "Doubt",
+};
+
+const HIGHLIGHT_LEGEND_BORDER: Record<HighlightColor, string> = {
+  yellow: "#e6c447",
+  green: "#43b874",
+  blue: "#4a8fdf",
+  pink: "#dd69af",
 };
 
 function normalizeRectPx(startX: number, startY: number, endX: number, endY: number, width: number, height: number): RectPx {
@@ -143,6 +156,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
   const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const glowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const exportCancelRef = useRef(false);
+  const annotationCacheRef = useRef<Map<number, PageAnnotationsCacheEntry>>(new Map());
   const activeStrokeSv = useSharedValue<LiveStroke | null>(null);
   const railCurrentPageSv = useSharedValue(1);
   const previewRectXSv = useSharedValue(0);
@@ -273,7 +287,39 @@ export default function ReaderScreen({ route, navigation }: Props) {
     });
   }, [strokes, visibleTopicMap]);
 
+  const currentPageNotes = useMemo(() => notes.filter((item) => item.page_number === page), [notes, page]);
+
+  const topicsWithPageStats = useMemo(() => {
+    const pageCounts = new Map<string, number>();
+    visibleHighlights.forEach((item) => {
+      if (!item.topic_id) return;
+      pageCounts.set(item.topic_id, (pageCounts.get(item.topic_id) ?? 0) + 1);
+    });
+    visibleStrokes.forEach((item) => {
+      if (!item.topic_id) return;
+      pageCounts.set(item.topic_id, (pageCounts.get(item.topic_id) ?? 0) + 1);
+    });
+    currentPageNotes.forEach((item) => {
+      if (!item.topic_id) return;
+      pageCounts.set(item.topic_id, (pageCounts.get(item.topic_id) ?? 0) + 1);
+    });
+    return topics.map((topic) => ({
+      ...topic,
+      pageAnnotationCount: pageCounts.get(topic.id) ?? 0,
+    }));
+  }, [currentPageNotes, topics, visibleHighlights, visibleStrokes]);
+
   const isBookmarked = useMemo(() => bookmarks.includes(page), [bookmarks, page]);
+
+  const currentPageTopicCount = useMemo(
+    () => topicsWithPageStats.filter((topic) => (topic.pageAnnotationCount ?? 0) > 0).length,
+    [topicsWithPageStats]
+  );
+
+  const currentPageMarks = useMemo(
+    () => visibleHighlights.length + visibleStrokes.length + (isBookmarked ? 1 : 0),
+    [isBookmarked, visibleHighlights.length, visibleStrokes.length]
+  );
 
   const previewRectAnimatedStyle = useAnimatedStyle(() => ({
     opacity: previewRectVisibleSv.value,
@@ -407,7 +453,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     setNotes(next);
   }, [bookId]);
 
-  const loadHighlightsForPage = useCallback(
+  const fetchHighlightsForPage = useCallback(
     async (pageNumber: number) => {
       const db = await getDB();
       const result = await db.executeSql(
@@ -423,12 +469,12 @@ export default function ReaderScreen({ route, navigation }: Props) {
         const row = result[0].rows.item(i) as HighlightRow & { color: string };
         next.push({ ...row, color: toHighlightColor(row.color) });
       }
-      setHighlights(next);
+      return next;
     },
     [bookId]
   );
 
-  const loadStrokesForPage = useCallback(
+  const fetchStrokesForPage = useCallback(
     async (pageNumber: number) => {
       const db = await getDB();
       const result = await db.executeSql(
@@ -443,19 +489,50 @@ export default function ReaderScreen({ route, navigation }: Props) {
       for (let i = 0; i < result[0].rows.length; i++) {
         next.push(result[0].rows.item(i) as StrokeRow);
       }
-      setStrokes(next);
+      return next;
     },
     [bookId]
   );
 
-  const loadPageAnnotations = useCallback(
+  const primePageAnnotations = useCallback(
     async (pageNumber: number) => {
-      await Promise.all([loadHighlightsForPage(pageNumber), loadStrokesForPage(pageNumber)]);
+      const safePageNumber = clamp(Math.round(pageNumber), 1, Math.max(totalPages, 1));
+      const cached = annotationCacheRef.current.get(safePageNumber);
+      if (cached) return cached;
+
+      const [pageHighlights, pageStrokes] = await Promise.all([
+        fetchHighlightsForPage(safePageNumber),
+        fetchStrokesForPage(safePageNumber),
+      ]);
+      const entry = { highlights: pageHighlights, strokes: pageStrokes };
+      annotationCacheRef.current.set(safePageNumber, entry);
+      return entry;
     },
-    [loadHighlightsForPage, loadStrokesForPage]
+    [fetchHighlightsForPage, fetchStrokesForPage, totalPages]
   );
 
+  const loadPageAnnotations = useCallback(
+    async (pageNumber: number) => {
+      const entry = await primePageAnnotations(pageNumber);
+      setHighlights(entry.highlights);
+      setStrokes(entry.strokes);
+
+      const neighbors = [pageNumber - 1, pageNumber + 1].filter(
+        (candidate) => candidate >= 1 && candidate <= Math.max(totalPages, 1)
+      );
+      neighbors.forEach((candidate) => {
+        primePageAnnotations(candidate).catch((error) => console.log("prefetch page annotations error", error));
+      });
+    },
+    [primePageAnnotations, totalPages]
+  );
+
+  const invalidatePageCache = useCallback((pageNumber: number) => {
+    annotationCacheRef.current.delete(pageNumber);
+  }, []);
+
   useEffect(() => {
+    annotationCacheRef.current.clear();
     loadBook().catch((e) => console.log("load book error", e));
     loadNotes().catch((e) => console.log("load notes error", e));
     loadTopics().catch((e) => console.log("load topics error", e));
@@ -476,6 +553,15 @@ export default function ReaderScreen({ route, navigation }: Props) {
   useEffect(() => {
     railCurrentPageSv.value = page;
   }, [page, railCurrentPageSv]);
+
+  useEffect(() => {
+    setSelectedHighlightId(null);
+    setSelectedStrokeId(null);
+    setMiniToolbar({ visible: false, x: 0, y: 0 });
+    setHighlightSheetVisible(false);
+    setStrokeSheetVisible(false);
+    setHighlightNoteEditorVisible(false);
+  }, [page]);
 
   useEffect(() => {
     if (!pendingJumpHighlightId) return;
@@ -564,6 +650,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         [id, bookId, page, x, y, w, h, "yellow", activeTopicId, now, now]
       );
 
+      invalidatePageCache(page);
       setHighlights((prev) => [...prev, { id, book_id: bookId, page_number: page, x, y, w, h, color: "yellow", topic_id: activeTopicId, created_at: now, updated_at: now }]);
       await Promise.all([loadTopics(), loadMarksSummary()]);
 
@@ -571,7 +658,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       flashHighlight(id);
       showMiniToolbarAt(rect.x + rect.w / 2, rect.y);
     },
-    [activeTopicId, bookId, containerSize.height, containerSize.width, flashHighlight, loadMarksSummary, loadTopics, page, showMiniToolbarAt]
+    [activeTopicId, bookId, containerSize.height, containerSize.width, flashHighlight, invalidatePageCache, loadMarksSummary, loadTopics, page, showMiniToolbarAt]
   );
 
   const finishHighlightDraw = useCallback(
@@ -622,10 +709,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
         ]
       );
 
+      invalidatePageCache(page);
       setStrokes((prev) => [...prev, stroke]);
       await Promise.all([loadTopics(), loadMarksSummary()]);
     },
-    [activeTopicId, bookId, containerSize.height, containerSize.width, loadMarksSummary, loadTopics, mode, page, toolStyles]
+    [activeTopicId, bookId, containerSize.height, containerSize.width, invalidatePageCache, loadMarksSummary, loadTopics, mode, page, toolStyles]
   );
 
   const resetDrawPreview = useCallback(() => {
@@ -925,6 +1013,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       const now = Date.now();
       await db.executeSql("UPDATE highlights SET color = ?, updated_at = ? WHERE id = ?", [color, now, selectedHighlightId]);
 
+      invalidatePageCache(page);
       setHighlights((prev) => prev.map((item) => (item.id === selectedHighlightId ? { ...item, color, updated_at: now } : item)));
       if (linkedNoteId) {
         await db.executeSql("UPDATE notes SET note_kind = ?, updated_at = ? WHERE id = ?", [COLOR_TO_KIND[color], now, linkedNoteId]);
@@ -932,7 +1021,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
       }
       resetToolbarTimer();
     },
-    [linkedNoteId, loadNotes, resetToolbarTimer, selectedHighlightId]
+    [invalidatePageCache, linkedNoteId, loadNotes, page, resetToolbarTimer, selectedHighlightId]
   );
 
   const assignTopicToSelectedHighlight = useCallback(
@@ -943,10 +1032,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
       await db.executeSql("UPDATE highlights SET topic_id = ?, updated_at = ? WHERE id = ?", [topicId, now, selectedHighlightId]);
       await db.executeSql("UPDATE notes SET topic_id = ?, updated_at = ? WHERE highlight_id = ?", [topicId, now, selectedHighlightId]);
 
+      invalidatePageCache(page);
       setHighlights((prev) => prev.map((item) => (item.id === selectedHighlightId ? { ...item, topic_id: topicId, updated_at: now } : item)));
       await Promise.all([loadTopics(), loadNotes()]);
     },
-    [loadNotes, loadTopics, selectedHighlightId]
+    [invalidatePageCache, loadNotes, loadTopics, page, selectedHighlightId]
   );
 
   const deleteSelectedHighlight = useCallback(async () => {
@@ -955,6 +1045,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     await db.executeSql("DELETE FROM highlights WHERE id = ?", [selectedHighlightId]);
     await db.executeSql("DELETE FROM notes WHERE highlight_id = ?", [selectedHighlightId]);
 
+    invalidatePageCache(page);
     setHighlights((prev) => prev.filter((item) => item.id !== selectedHighlightId));
     setSelectedHighlightId(null);
     setLinkedNoteId(null);
@@ -964,7 +1055,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
     setMiniToolbar({ visible: false, x: 0, y: 0 });
 
     await Promise.all([loadNotes(), loadTopics(), loadMarksSummary()]);
-  }, [loadMarksSummary, loadNotes, loadTopics, selectedHighlightId]);
+  }, [invalidatePageCache, loadMarksSummary, loadNotes, loadTopics, page, selectedHighlightId]);
 
   const onPressStroke = useCallback(
     (stroke: StrokeRow) => {
@@ -972,6 +1063,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
         const removeStroke = async () => {
           const db = await getDB();
           await db.executeSql("DELETE FROM strokes WHERE id = ?", [stroke.id]);
+          invalidatePageCache(stroke.page_number);
           setStrokes((prev) => prev.filter((item) => item.id !== stroke.id));
           await Promise.all([loadTopics(), loadMarksSummary()]);
         };
@@ -983,18 +1075,19 @@ export default function ReaderScreen({ route, navigation }: Props) {
       setSelectedStrokeId(stroke.id);
       setStrokeSheetVisible(true);
     },
-    [loadMarksSummary, loadTopics, mode]
+    [invalidatePageCache, loadMarksSummary, loadTopics, mode]
   );
 
   const deleteSelectedStroke = useCallback(async () => {
     if (!selectedStrokeId) return;
     const db = await getDB();
     await db.executeSql("DELETE FROM strokes WHERE id = ?", [selectedStrokeId]);
+    invalidatePageCache(page);
     setStrokes((prev) => prev.filter((item) => item.id !== selectedStrokeId));
     setSelectedStrokeId(null);
     setStrokeSheetVisible(false);
     await Promise.all([loadTopics(), loadMarksSummary()]);
-  }, [loadMarksSummary, loadTopics, selectedStrokeId]);
+  }, [invalidatePageCache, loadMarksSummary, loadTopics, page, selectedStrokeId]);
 
   const assignTopicToSelectedStroke = useCallback(
     async (topicId: string | null) => {
@@ -1002,10 +1095,11 @@ export default function ReaderScreen({ route, navigation }: Props) {
       const db = await getDB();
       const now = Date.now();
       await db.executeSql("UPDATE strokes SET topic_id = ?, updated_at = ? WHERE id = ?", [topicId, now, selectedStrokeId]);
+      invalidatePageCache(page);
       setStrokes((prev) => prev.map((item) => (item.id === selectedStrokeId ? { ...item, topic_id: topicId, updated_at: now } : item)));
       await loadTopics();
     },
-    [loadTopics, selectedStrokeId]
+    [invalidatePageCache, loadTopics, page, selectedStrokeId]
   );
 
   const jumpToPage = useCallback(
@@ -1024,10 +1118,18 @@ export default function ReaderScreen({ route, navigation }: Props) {
     [railCurrentPageSv, totalPages]
   );
 
+  const nextPage = useCallback(() => {
+    jumpToPage(page + 1);
+  }, [jumpToPage, page]);
+
+  const previousPage = useCallback(() => {
+    jumpToPage(page - 1);
+  }, [jumpToPage, page]);
+
   const onPdfPageChanged = useCallback(
-    (nextPage: number) => {
-      railCurrentPageSv.value = nextPage;
-      setPage(nextPage);
+    (nextPageNumber: number) => {
+      railCurrentPageSv.value = nextPageNumber;
+      setPage(nextPageNumber);
     },
     [railCurrentPageSv]
   );
@@ -1083,13 +1185,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
             await db.executeSql("UPDATE strokes SET topic_id = NULL WHERE topic_id = ?", [topicId]);
             await db.executeSql("UPDATE notes SET topic_id = NULL WHERE topic_id = ?", [topicId]);
             await db.executeSql("DELETE FROM topics WHERE id = ?", [topicId]);
+            invalidatePageCache(page);
             await Promise.all([loadTopics(), loadPageAnnotations(page), loadNotes()]);
           },
         },
         { text: "Cancel", style: "cancel" },
       ]);
     },
-    [loadNotes, loadPageAnnotations, loadTopics, page, topics]
+    [invalidatePageCache, loadNotes, loadPageAnnotations, loadTopics, page, topics]
   );
 
   const saveTopicEditor = useCallback(async () => {
@@ -1176,13 +1279,13 @@ export default function ReaderScreen({ route, navigation }: Props) {
           width: Math.max(1, containerSize.width),
           height: Math.max(1, containerSize.height),
         },
-        onProgress: ({ pageNumber, totalPages, progressPct }) => {
+        onProgress: ({ pageNumber, totalPages: exportTotalPages, progressPct }) => {
           setExportState((prev) => ({
             ...prev,
             visible: true,
             status: "running",
             pageNumber,
-            totalPages,
+            totalPages: exportTotalPages,
             progressPct,
           }));
         },
@@ -1243,6 +1346,9 @@ export default function ReaderScreen({ route, navigation }: Props) {
         title={book.title}
         page={page}
         totalPages={totalPages}
+        currentPageNotes={currentPageNotes.length}
+        currentPageMarks={currentPageMarks}
+        currentPageTopicCount={currentPageTopicCount}
         highlightMode={highlightMode}
         penMode={penMode}
         revisionMode={revisionMode}
@@ -1280,16 +1386,18 @@ export default function ReaderScreen({ route, navigation }: Props) {
       />
 
       <View style={styles.readerArea}>
-        <PdfStage
+        <SinglePagePdfView
           source={source}
           pdfRef={pdfRef}
           pageNumber={page}
           totalPages={totalPages}
-          scrollEnabled={!penMode}
+          interactionLocked={overlayCaptureEnabled}
           onLayoutSize={onStageLayoutSize}
           onLoadComplete={setTotalPages}
           onPageChanged={onPdfPageChanged}
           onError={onPdfError}
+          onNextPage={nextPage}
+          onPreviousPage={previousPage}
           renderOverlay={(metrics) => (
             <OverlayRoot
               pageNumber={metrics.pageNumber}
@@ -1453,6 +1561,14 @@ export default function ReaderScreen({ route, navigation }: Props) {
         </View>
       </View>
 
+      <PageNavigationBar
+        currentPage={page}
+        totalPages={totalPages}
+        onPrevious={previousPage}
+        onNext={nextPage}
+        onJumpToPage={jumpToPage}
+      />
+
       <NotesBottomSheet
         visible={notesVisible}
         notes={notes}
@@ -1466,7 +1582,8 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
       <TopicsDrawer
         visible={topicsVisible}
-        topics={topics}
+        topics={topicsWithPageStats}
+        currentPage={page}
         activeTopicId={activeTopicId}
         onClose={() => setTopicsVisible(false)}
         onSelectTopic={setActiveTopicId}
@@ -1526,12 +1643,12 @@ export default function ReaderScreen({ route, navigation }: Props) {
                 <Pressable
                   key={item}
                   onPress={() => updateHighlightColor(item).catch((e) => console.log("highlight color error", e))}
-                  style={[
-                    styles.legendChip,
-                    selectedHighlight?.color === item ? styles.legendChipActive : null,
-                    { borderColor: item === "yellow" ? "#e6c447" : item === "green" ? "#43b874" : item === "blue" ? "#4a8fdf" : "#dd69af" },
-                  ]}
-                >
+                    style={[
+                      styles.legendChip,
+                      selectedHighlight?.color === item ? styles.legendChipActive : null,
+                      { borderColor: HIGHLIGHT_LEGEND_BORDER[item] },
+                    ]}
+                  >
                   <Text style={styles.legendChipText}>{COLOR_LABELS[item]}</Text>
                 </Pressable>
               ))}
@@ -1822,7 +1939,7 @@ const styles = StyleSheet.create({
   notesFab: {
     position: "absolute",
     right: 16,
-    bottom: 24,
+    bottom: 20,
     minWidth: 96,
     minHeight: 56,
     borderRadius: 16,

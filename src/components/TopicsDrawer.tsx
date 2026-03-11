@@ -7,11 +7,13 @@ export type ReaderTopic = {
   color: string;
   is_visible: number;
   annotationCount: number;
+  pageAnnotationCount?: number;
 };
 
 type Props = {
   visible: boolean;
   topics: ReaderTopic[];
+  currentPage: number;
   activeTopicId: string | null;
   onClose: () => void;
   onSelectTopic: (topicId: string) => void;
@@ -25,6 +27,7 @@ const DRAWER_WIDTH = 290;
 function TopicsDrawer({
   visible,
   topics,
+  currentPage,
   activeTopicId,
   onClose,
   onSelectTopic,
@@ -58,7 +61,10 @@ function TopicsDrawer({
 
       <Animated.View style={[styles.drawer, { transform: [{ translateX: x }] }]}> 
         <View style={styles.headerRow}>
-          <Text style={styles.title}>Topics</Text>
+          <View>
+            <Text style={styles.title}>Topics</Text>
+            <Text style={styles.subtitle}>Page {currentPage} focus</Text>
+          </View>
           <Pressable onPress={onAddTopic} style={styles.addButton}>
             <Text style={styles.addButtonText}>Add Topic</Text>
           </Pressable>
@@ -78,7 +84,10 @@ function TopicsDrawer({
                 <Text numberOfLines={1} style={styles.topicName}>
                   {topic.name}
                 </Text>
-                <Text style={styles.count}>{topic.annotationCount}</Text>
+                <View style={styles.countWrap}>
+                  <Text style={styles.count}>{topic.pageAnnotationCount ?? 0}</Text>
+                  <Text style={styles.countMeta}>Pg</Text>
+                </View>
                 <Pressable
                   onPress={() => onToggleVisibility(topic.id, topic.is_visible ? 0 : 1)}
                   style={[styles.visibilityChip, topic.is_visible ? styles.visible : styles.hidden]}
@@ -128,6 +137,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#102131",
   },
+  subtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "#597081",
+    fontWeight: "700",
+  },
   addButton: {
     minHeight: 40,
     borderRadius: 10,
@@ -171,12 +186,20 @@ const styles = StyleSheet.create({
     color: "#132536",
     fontWeight: "700",
   },
+  countWrap: {
+    minWidth: 34,
+    alignItems: "center",
+  },
   count: {
-    fontSize: 13,
-    color: "#4f6578",
-    fontWeight: "700",
-    width: 24,
+    fontSize: 14,
+    color: "#183449",
+    fontWeight: "800",
     textAlign: "center",
+  },
+  countMeta: {
+    fontSize: 10,
+    color: "#6b7e8e",
+    fontWeight: "700",
   },
   visibilityChip: {
     minHeight: 30,

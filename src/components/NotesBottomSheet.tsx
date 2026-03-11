@@ -38,12 +38,25 @@ type Props = {
 };
 
 const FILTERS: { key: NotesFilter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "page", label: "Page Notes" },
+  { key: "page", label: "Current Page" },
   { key: "linked", label: "Linked Notes" },
+  { key: "all", label: "All Notes" },
 ];
 
 const SHEET_HEIGHT = Math.round(Dimensions.get("window").height * 0.75);
+
+function getLinkedBadgeStyles(color?: HighlightColor | null) {
+  if (color === "green") {
+    return { borderColor: "#2f9f63", backgroundColor: "#e7f8ef" };
+  }
+  if (color === "blue") {
+    return { borderColor: "#3577c2", backgroundColor: "#eaf4ff" };
+  }
+  if (color === "pink") {
+    return { borderColor: "#bf538e", backgroundColor: "#ffeef7" };
+  }
+  return { borderColor: "#b89c39", backgroundColor: "#fff8df" };
+}
 
 function NotesBottomSheet({
   visible,
@@ -58,7 +71,7 @@ function NotesBottomSheet({
   const [mounted, setMounted] = useState(visible);
   const [draft, setDraft] = useState("");
   const [newNoteKind, setNewNoteKind] = useState<"normal" | "important" | "doubt">("normal");
-  const [filter, setFilter] = useState<NotesFilter>("all");
+  const [filter, setFilter] = useState<NotesFilter>("page");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [collapsedPages, setCollapsedPages] = useState<Record<number, boolean>>({});
@@ -68,6 +81,7 @@ function NotesBottomSheet({
 
   useEffect(() => {
     if (visible) {
+      setFilter("page");
       setMounted(true);
       Animated.parallel([
         Animated.timing(backdropOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
@@ -83,6 +97,11 @@ function NotesBottomSheet({
       if (finished) setMounted(false);
     });
   }, [backdropOpacity, translateY, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    setFilter("page");
+  }, [currentPage, visible]);
 
   const panResponder = useMemo(
     () =>
@@ -105,8 +124,8 @@ function NotesBottomSheet({
   const groupedNotes = useMemo(() => {
     const filtered = notes.filter((item) => {
       if (filter === "all") return true;
-      if (filter === "page") return !item.highlight_id;
-      return !!item.highlight_id;
+      if (filter === "page") return item.page_number === currentPage;
+      return item.page_number === currentPage && !!item.highlight_id;
     });
 
     const groups = new Map<number, ReaderNote[]>();
@@ -117,12 +136,16 @@ function NotesBottomSheet({
     });
 
     return Array.from(groups.entries())
-      .sort((a, b) => a[0] - b[0])
+      .sort((a, b) => {
+        if (a[0] === currentPage) return -1;
+        if (b[0] === currentPage) return 1;
+        return a[0] - b[0];
+      })
       .map(([page, pageNotes]) => ({
         page,
         notes: pageNotes.sort((a, b) => b.updated_at - a.updated_at),
       }));
-  }, [filter, notes]);
+  }, [currentPage, filter, notes]);
 
   if (!mounted) return null;
 
@@ -219,29 +242,7 @@ function NotesBottomSheet({
                           <Pressable key={item.id} style={styles.noteCard} onPress={() => onPressNote(item)}>
                             <View style={styles.noteTopRow}>
                               {item.highlight_id ? (
-                                <View
-                                  style={[
-                                    styles.linkedBadge,
-                                    {
-                                      borderColor:
-                                        item.highlight_color === "green"
-                                          ? "#2f9f63"
-                                          : item.highlight_color === "blue"
-                                            ? "#3577c2"
-                                            : item.highlight_color === "pink"
-                                              ? "#bf538e"
-                                              : "#b89c39",
-                                      backgroundColor:
-                                        item.highlight_color === "green"
-                                          ? "#e7f8ef"
-                                          : item.highlight_color === "blue"
-                                            ? "#eaf4ff"
-                                            : item.highlight_color === "pink"
-                                              ? "#ffeef7"
-                                              : "#fff8df",
-                                    },
-                                  ]}
-                                >
+                                <View style={[styles.linkedBadge, getLinkedBadgeStyles(item.highlight_color)]}>
                                   <Text style={styles.linkedBadgeText}>LINKED</Text>
                                 </View>
                               ) : (

@@ -5,6 +5,9 @@ type Props = {
   title: string;
   page: number;
   totalPages: number;
+  currentPageNotes: number;
+  currentPageMarks: number;
+  currentPageTopicCount: number;
   highlightMode: boolean;
   penMode: boolean;
   revisionMode: boolean;
@@ -46,6 +49,9 @@ const TopToolbar = React.memo(function TopToolbar({
   title,
   page,
   totalPages,
+  currentPageNotes,
+  currentPageMarks,
+  currentPageTopicCount,
   highlightMode,
   penMode,
   revisionMode,
@@ -69,9 +75,14 @@ const TopToolbar = React.memo(function TopToolbar({
             <Text numberOfLines={1} ellipsizeMode="tail" style={styles.titleText}>
               {title}
             </Text>
-            <Text style={styles.pageText}>
-              {page} / {Math.max(totalPages, 1)}
-            </Text>
+            <View style={styles.metaRow}>
+              <Text style={styles.pageText}>
+                {page} / {Math.max(totalPages, 1)}
+              </Text>
+              <Text style={styles.metaText}>{`${currentPageNotes} notes`}</Text>
+              <Text style={styles.metaText}>{`${currentPageMarks} marks`}</Text>
+              <Text style={styles.metaText}>{`${currentPageTopicCount} topics`}</Text>
+            </View>
           </View>
         </View>
 
@@ -137,6 +148,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#5d6e7b",
     marginTop: 2,
+    fontWeight: "800",
+  },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 2,
+  },
+  metaText: {
+    fontSize: 11,
+    color: "#607483",
+    fontWeight: "700",
   },
   actions: {
     flexDirection: "row",

@@ -15,6 +15,14 @@ type Props = {
   pageNumber: number;
   totalPages?: number;
   scrollEnabled: boolean;
+  horizontal?: boolean;
+  enablePaging?: boolean;
+  fitPolicy?: 0 | 1 | 2;
+  showsHorizontalScrollIndicator?: boolean;
+  showsVerticalScrollIndicator?: boolean;
+  minScale?: number;
+  maxScale?: number;
+  enableDoubleTapZoom?: boolean;
   onLayoutSize: (size: { width: number; height: number }) => void;
   onLoadComplete: (pages: number) => void;
   onPageChanged: (page: number) => void;
@@ -25,7 +33,16 @@ type Props = {
 type PdfSurfaceProps = {
   source: { uri: string };
   pdfRef: React.RefObject<any>;
+  pageNumber: number;
   scrollEnabled: boolean;
+  horizontal?: boolean;
+  enablePaging?: boolean;
+  fitPolicy?: 0 | 1 | 2;
+  showsHorizontalScrollIndicator?: boolean;
+  showsVerticalScrollIndicator?: boolean;
+  minScale?: number;
+  maxScale?: number;
+  enableDoubleTapZoom?: boolean;
   onLoadComplete: (pages: number) => void;
   onPageChanged: (page: number) => void;
   onError: (error: unknown) => void;
@@ -34,7 +51,16 @@ type PdfSurfaceProps = {
 const PdfSurface = React.memo(function PdfSurfaceImpl({
   source,
   pdfRef,
+  pageNumber,
   scrollEnabled,
+  horizontal = false,
+  enablePaging = false,
+  fitPolicy = 2,
+  showsHorizontalScrollIndicator = false,
+  showsVerticalScrollIndicator = false,
+  minScale = 1,
+  maxScale = 1,
+  enableDoubleTapZoom = false,
   onLoadComplete,
   onPageChanged,
   onError,
@@ -44,7 +70,16 @@ const PdfSurface = React.memo(function PdfSurfaceImpl({
       ref={pdfRef}
       source={source}
       style={styles.pdf}
+      page={pageNumber}
       scrollEnabled={scrollEnabled}
+      horizontal={horizontal}
+      enablePaging={enablePaging}
+      fitPolicy={fitPolicy}
+      showsHorizontalScrollIndicator={showsHorizontalScrollIndicator}
+      showsVerticalScrollIndicator={showsVerticalScrollIndicator}
+      minScale={minScale}
+      maxScale={maxScale}
+      enableDoubleTapZoom={enableDoubleTapZoom}
       onLoadComplete={(pages) => onLoadComplete(pages)}
       onPageChanged={(nextPage) => onPageChanged(nextPage)}
       onError={onError}
@@ -58,6 +93,14 @@ function PdfStageImpl({
   pageNumber,
   totalPages,
   scrollEnabled,
+  horizontal,
+  enablePaging,
+  fitPolicy,
+  showsHorizontalScrollIndicator,
+  showsVerticalScrollIndicator,
+  minScale,
+  maxScale,
+  enableDoubleTapZoom,
   onLayoutSize,
   onLoadComplete,
   onPageChanged,
@@ -93,7 +136,16 @@ function PdfStageImpl({
       <PdfSurface
         source={source}
         pdfRef={pdfRef}
+        pageNumber={pageNumber}
         scrollEnabled={scrollEnabled}
+        horizontal={horizontal}
+        enablePaging={enablePaging}
+        fitPolicy={fitPolicy}
+        showsHorizontalScrollIndicator={showsHorizontalScrollIndicator}
+        showsVerticalScrollIndicator={showsVerticalScrollIndicator}
+        minScale={minScale}
+        maxScale={maxScale}
+        enableDoubleTapZoom={enableDoubleTapZoom}
         onLoadComplete={onLoadComplete}
         onPageChanged={onPageChanged}
         onError={onError}
