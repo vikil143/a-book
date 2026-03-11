@@ -47,11 +47,11 @@ const PageNavigationBar = React.memo(function PageNavigationBar({
             pressed ? styles.navButtonPressed : null,
           ]}
         >
-          <Text style={styles.navButtonText}>Prev</Text>
+          <Text style={styles.navButtonText}>Previous</Text>
         </Pressable>
 
         <View style={styles.jumpCard}>
-          <Text style={styles.jumpLabel}>Jump</Text>
+          <Text style={styles.jumpLabel}>Page</Text>
           <TextInput
             value={draftPage}
             onChangeText={setDraftPage}
@@ -62,7 +62,7 @@ const PageNavigationBar = React.memo(function PageNavigationBar({
             style={styles.jumpInput}
             maxLength={Math.max(String(totalPages).length, 1)}
           />
-          <Text style={styles.jumpMeta}>/ {Math.max(totalPages, 1)}</Text>
+          <Text style={styles.jumpMeta}>{`of ${Math.max(totalPages, 1)}`}</Text>
         </View>
 
         <Pressable
@@ -84,31 +84,31 @@ const PageNavigationBar = React.memo(function PageNavigationBar({
 
 const styles = StyleSheet.create({
   shell: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 20,
     paddingTop: 10,
-    paddingBottom: 12,
-    backgroundColor: "rgba(242, 246, 251, 0.96)",
-    borderTopWidth: 1,
-    borderTopColor: "#d9e3eb",
+    paddingBottom: 18,
+    backgroundColor: "transparent",
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
   },
   navButton: {
     flex: 1,
-    minHeight: 50,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#c9d6e1",
-    backgroundColor: "#ffffff",
+    minHeight: 52,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.92)",
     justifyContent: "center",
     alignItems: "center",
+    shadowColor: "#6d6052",
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
   },
   navButtonPrimary: {
-    borderColor: "#21579e",
-    backgroundColor: "#163a67",
+    backgroundColor: "#1f1c18",
   },
   navButtonDisabled: {
     opacity: 0.45,
@@ -117,42 +117,45 @@ const styles = StyleSheet.create({
     opacity: 0.88,
   },
   navButtonText: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#193046",
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#3f352c",
   },
   navButtonTextPrimary: {
-    color: "#ffffff",
+    color: "#fffaf4",
   },
   jumpCard: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 50,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#d3dfe8",
-    backgroundColor: "#fcfeff",
-    paddingHorizontal: 12,
-    gap: 6,
+    minHeight: 52,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,248,241,0.96)",
+    paddingHorizontal: 16,
+    gap: 8,
+    shadowColor: "#6d6052",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
   },
   jumpLabel: {
     fontSize: 12,
-    fontWeight: "800",
-    color: "#54697c",
+    fontWeight: "700",
+    color: "#7b6c5f",
     textTransform: "uppercase",
   },
   jumpInput: {
     minWidth: 34,
     paddingVertical: 0,
     fontSize: 18,
-    fontWeight: "800",
-    color: "#102131",
+    fontWeight: "700",
+    color: "#241e1a",
     textAlign: "center",
   },
   jumpMeta: {
     fontSize: 13,
-    fontWeight: "700",
-    color: "#5f7181",
+    fontWeight: "600",
+    color: "#7a6d61",
   },
 });
 

@@ -24,12 +24,13 @@ import Animated, { useAnimatedStyle, useSharedValue } from "react-native-reanima
 import { getDB } from "../db";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import { uid } from "../utils/files";
-import TopToolbar from "../components/TopToolbar";
+import PremiumHeader from "../components/PremiumHeader";
 import NotesBottomSheet, { type ReaderNote } from "../components/NotesBottomSheet";
 import TopicsDrawer, { type ReaderTopic } from "../components/TopicsDrawer";
 import HighlightMiniToolbar, { type HighlightColor } from "../components/HighlightMiniToolbar";
 import MarksRail from "../components/MarksRail";
 import PageNavigationBar from "../components/PageNavigationBar";
+import FloatingToolBar from "../components/FloatingToolBar";
 import { getBookMarksSummary, type PageMarksSummary } from "../db/marksSummary";
 import RNFS from "react-native-fs";
 import OverlayRoot from "./reader/OverlayRoot";
@@ -176,6 +177,7 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   const [notesVisible, setNotesVisible] = useState(false);
   const [topicsVisible, setTopicsVisible] = useState(false);
+  const [moreMenuVisible, setMoreMenuVisible] = useState(false);
 
   const [notes, setNotes] = useState<ReaderNote[]>([]);
   const [highlights, setHighlights] = useState<HighlightRow[]>([]);
@@ -1342,47 +1344,18 @@ export default function ReaderScreen({ route, navigation }: Props) {
 
   return (
     <SafeAreaView edges={["top"]} style={styles.container}>
-      <TopToolbar
+      <View pointerEvents="none" style={styles.backgroundWashTop} />
+      <View pointerEvents="none" style={styles.backgroundWashBottom} />
+
+      <PremiumHeader
         title={book.title}
         page={page}
         totalPages={totalPages}
         currentPageNotes={currentPageNotes.length}
         currentPageMarks={currentPageMarks}
         currentPageTopicCount={currentPageTopicCount}
-        highlightMode={highlightMode}
-        penMode={penMode}
-        revisionMode={revisionMode}
-        revisionImportantOnly={revisionImportantOnly}
-        isBookmarked={isBookmarked}
         onPressBack={navigation.goBack}
-        onToggleHighlight={() => {
-          setMode((prev) => {
-            const next = prev === "highlight" ? "none" : "highlight";
-            if (next === "none") resetDrawPreview();
-            return next;
-          });
-        }}
-        onTogglePen={() => {
-          setMode((prev) => {
-            if (
-              prev === "pen" ||
-              prev === "marker" ||
-              prev === "highlighter" ||
-              prev === "underline" ||
-              prev === "eraser" ||
-              prev === "stroke_select"
-            ) {
-              resetDrawPreview();
-              return "none";
-            }
-            return "pen";
-          });
-        }}
-        onToggleBookmark={() => toggleBookmark().catch((e) => console.log("bookmark error", e))}
-        onPressTopics={() => setTopicsVisible(true)}
-        onPressExport={() => startExport().catch((e) => console.log("export error", e))}
-        onToggleRevision={() => setRevisionMode((prev) => !prev)}
-        onToggleRevisionImportantOnly={() => setRevisionImportantOnly((prev) => !prev)}
+        onPressMore={() => setMoreMenuVisible(true)}
       />
 
       <View style={styles.readerArea}>
@@ -1455,108 +1428,66 @@ export default function ReaderScreen({ route, navigation }: Props) {
             onDelete={() => deleteSelectedHighlight().catch((e) => console.log("delete highlight error", e))}
           />
 
-          {penMode ? (
-            <View style={styles.penPalette}>
-              <Pressable
-                style={[styles.penPaletteBtn, mode === "pen" ? styles.penPaletteBtnActive : null]}
-                onPress={() => setMode("pen")}
-              >
-                <Text style={styles.penPaletteText}>Pen</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.penPaletteBtn, mode === "marker" ? styles.penPaletteBtnActive : null]}
-                onPress={() => setMode("marker")}
-              >
-                <Text style={styles.penPaletteText}>Marker</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.penPaletteBtn, mode === "highlighter" ? styles.penPaletteBtnActive : null]}
-                onPress={() => setMode("highlighter")}
-              >
-                <Text style={styles.penPaletteText}>Highlighter</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.penPaletteBtn, mode === "underline" ? styles.penPaletteBtnActive : null]}
-                onPress={() => setMode("underline")}
-              >
-                <Text style={styles.penPaletteText}>Underline</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.penPaletteBtn, mode === "eraser" ? styles.penPaletteBtnActive : null]}
-                onPress={() => setMode("eraser")}
-              >
-                <Text style={styles.penPaletteText}>Eraser</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.penPaletteBtn, mode === "stroke_select" ? styles.penPaletteBtnActive : null]}
-                onPress={() => setMode("stroke_select")}
-              >
-                <Text style={styles.penPaletteText}>Select</Text>
-              </Pressable>
-              {(mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline") ? (
-                <>
-                  <View style={styles.toolAdjustRow}>
-                    <Pressable
-                      style={styles.toolAdjustBtn}
-                      onPress={() =>
-                        setToolStyles((prev) => {
-                          const current =
-                            mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
-                          return {
-                            ...prev,
-                            [current]: { ...prev[current], width: clamp(prev[current].width - 1, 1, 36) },
-                          };
-                        })
-                      }
-                    >
-                      <Text style={styles.toolAdjustText}>-</Text>
-                    </Pressable>
-                    <Text style={styles.toolAdjustLabel}>
-                      {`${Math.round((mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? toolStyles[mode].width : toolStyles.pen.width) * 10) / 10}px`}
-                    </Text>
-                    <Pressable
-                      style={styles.toolAdjustBtn}
-                      onPress={() =>
-                        setToolStyles((prev) => {
-                          const current =
-                            mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
-                          return {
-                            ...prev,
-                            [current]: { ...prev[current], width: clamp(prev[current].width + 1, 1, 36) },
-                          };
-                        })
-                      }
-                    >
-                      <Text style={styles.toolAdjustText}>+</Text>
-                    </Pressable>
-                  </View>
-
-                  <View style={styles.colorSwatchRow}>
-                    {["#246de0", "#1f2630", "#e24b4b", "#2b9f55", "#7d4fe0", "#d18f24"].map((color) => {
-                      const activeKey =
-                        mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
-                      const selected = toolStyles[activeKey].color === color;
-                      return (
-                        <Pressable
-                          key={color}
-                          onPress={() =>
-                            setToolStyles((prev) => ({
-                              ...prev,
-                              [activeKey]: { ...prev[activeKey], color },
-                            }))
-                          }
-                          style={[styles.colorSwatch, selected ? styles.colorSwatchActive : null, { backgroundColor: color }]}
-                        />
-                      );
-                    })}
-                  </View>
-                </>
-              ) : null}
-            </View>
-          ) : null}
+          <FloatingToolBar
+            mode={mode}
+            highlightMode={highlightMode}
+            penMode={penMode}
+            revisionMode={revisionMode}
+            revisionImportantOnly={revisionImportantOnly}
+            isBookmarked={isBookmarked}
+            toolStyles={toolStyles}
+            onToggleHighlight={() => {
+              setMode((prev) => {
+                const next = prev === "highlight" ? "none" : "highlight";
+                if (next === "none") resetDrawPreview();
+                return next;
+              });
+            }}
+            onTogglePen={() => {
+              setMode((prev) => {
+                if (
+                  prev === "pen" ||
+                  prev === "marker" ||
+                  prev === "highlighter" ||
+                  prev === "underline" ||
+                  prev === "eraser" ||
+                  prev === "stroke_select"
+                ) {
+                  resetDrawPreview();
+                  return "none";
+                }
+                return "pen";
+              });
+            }}
+            onToggleBookmark={() => toggleBookmark().catch((e) => console.log("bookmark error", e))}
+            onPressTopics={() => setTopicsVisible(true)}
+            onPressMore={() => setMoreMenuVisible(true)}
+            onSetMode={setMode}
+            onAdjustWidth={(delta) =>
+              setToolStyles((prev) => {
+                const current =
+                  mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
+                return {
+                  ...prev,
+                  [current]: { ...prev[current], width: clamp(prev[current].width + delta, 1, 36) },
+                };
+              })
+            }
+            onSelectColor={(color) =>
+              setToolStyles((prev) => {
+                const current =
+                  mode === "pen" || mode === "marker" || mode === "highlighter" || mode === "underline" ? mode : "pen";
+                return {
+                  ...prev,
+                  [current]: { ...prev[current], color },
+                };
+              })
+            }
+          />
 
           <Pressable style={styles.notesFab} onPress={() => setNotesVisible(true)}>
-            <Text style={styles.notesFabText}>Notes</Text>
+            <Text style={styles.notesFabLabel}>Notes</Text>
+            <Text style={styles.notesFabMeta}>{`${currentPageNotes.length} on this page`}</Text>
           </Pressable>
         </View>
       </View>
@@ -1593,6 +1524,51 @@ export default function ReaderScreen({ route, navigation }: Props) {
         onAddTopic={addTopic}
         onLongPressTopic={renameOrDeleteTopic}
       />
+
+      <Modal visible={moreMenuVisible} transparent animationType="fade" onRequestClose={() => setMoreMenuVisible(false)}>
+        <View style={styles.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setMoreMenuVisible(false)} />
+          <View style={styles.actionSheet}>
+            <Text style={styles.actionSheetTitle}>Reader actions</Text>
+            <Text style={styles.sheetSectionLabel}>Keep the page clean while secondary actions stay here.</Text>
+
+            <Pressable
+              style={[styles.sheetPrimaryBtn, revisionMode ? styles.sheetPrimaryBtnMuted : null]}
+              onPress={() => {
+                setRevisionMode((prev) => !prev);
+                setMoreMenuVisible(false);
+              }}
+            >
+              <Text style={styles.sheetPrimaryBtnText}>{revisionMode ? "Exit revision mode" : "Enter revision mode"}</Text>
+            </Pressable>
+
+            {revisionMode ? (
+              <Pressable
+                style={styles.exportSecondaryBtn}
+                onPress={() => setRevisionImportantOnly((prev) => !prev)}
+              >
+                <Text style={styles.exportSecondaryBtnText}>
+                  {revisionImportantOnly ? "Show all revision marks" : "Show important revision marks"}
+                </Text>
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              style={styles.exportPrimaryBtn}
+              onPress={() => {
+                setMoreMenuVisible(false);
+                startExport().catch((e) => console.log("export error", e));
+              }}
+            >
+              <Text style={styles.exportPrimaryBtnText}>Export annotated PDF</Text>
+            </Pressable>
+
+            <Pressable style={styles.topicEditorButton} onPress={() => setMoreMenuVisible(false)}>
+              <Text style={styles.topicEditorButtonText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={highlightSheetVisible}
@@ -1840,17 +1816,35 @@ export default function ReaderScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f2f6fb",
+    backgroundColor: "#f6f1e8",
   },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#f6f9fc",
+    backgroundColor: "#f6f1e8",
   },
   loadingText: {
-    color: "#405262",
+    color: "#5f5449",
     fontWeight: "700",
+  },
+  backgroundWashTop: {
+    position: "absolute",
+    top: -60,
+    right: -40,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: "rgba(232, 221, 204, 0.7)",
+  },
+  backgroundWashBottom: {
+    position: "absolute",
+    left: -80,
+    bottom: 160,
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: "rgba(245, 236, 223, 0.9)",
   },
   readerArea: {
     flex: 1,
@@ -1859,103 +1853,37 @@ const styles = StyleSheet.create({
   },
   previewRect: {
     position: "absolute",
-    borderRadius: 9,
+    borderRadius: 14,
     borderWidth: 2,
-    borderColor: "#2f77e6",
-    backgroundColor: "rgba(76, 141, 241, 0.2)",
-  },
-  penPalette: {
-    position: "absolute",
-    left: 12,
-    bottom: 24,
-    borderRadius: 12,
-    padding: 6,
-    gap: 6,
-    backgroundColor: "rgba(255,255,255,0.94)",
-    borderWidth: 1,
-    borderColor: "#d3dee8",
-  },
-  penPaletteBtn: {
-    minWidth: 80,
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: "#f5f8fb",
-    borderWidth: 1,
-    borderColor: "#ced9e3",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  penPaletteBtnActive: {
-    backgroundColor: "#e7f0ff",
-    borderColor: "#357be1",
-  },
-  penPaletteText: {
-    fontWeight: "800",
-    color: "#203344",
-  },
-  toolAdjustRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 6,
-  },
-  toolAdjustBtn: {
-    minWidth: 30,
-    minHeight: 30,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ced9e3",
-    backgroundColor: "#f5f8fb",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  toolAdjustText: {
-    color: "#203344",
-    fontWeight: "800",
-    fontSize: 16,
-  },
-  toolAdjustLabel: {
-    minWidth: 44,
-    textAlign: "center",
-    color: "#203344",
-    fontWeight: "700",
-  },
-  colorSwatchRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  colorSwatch: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1.2,
-    borderColor: "#c7d2dc",
-  },
-  colorSwatchActive: {
-    borderColor: "#0f1820",
-    borderWidth: 2,
+    borderColor: "#4c7fd8",
+    backgroundColor: "rgba(113, 154, 231, 0.18)",
   },
   notesFab: {
     position: "absolute",
-    right: 16,
-    bottom: 20,
-    minWidth: 96,
-    minHeight: 56,
-    borderRadius: 16,
-    backgroundColor: "#1f6fde",
+    right: 20,
+    top: 20,
+    minWidth: 108,
+    minHeight: 62,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(255,255,255,0.95)",
     justifyContent: "center",
-    alignItems: "center",
-    shadowColor: "#0a2540",
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 5 },
+    shadowColor: "#6f6354",
+    shadowOpacity: 0.14,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 8,
   },
-  notesFabText: {
-    color: "#fff",
+  notesFabLabel: {
+    color: "#1f1a16",
     fontWeight: "800",
-    fontSize: 15,
+    fontSize: 14,
+  },
+  notesFabMeta: {
+    marginTop: 3,
+    color: "#7c6f62",
+    fontSize: 11,
+    fontWeight: "600",
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
@@ -2003,6 +1931,9 @@ const styles = StyleSheet.create({
   sheetPrimaryBtnText: {
     color: "#fff",
     fontWeight: "800",
+  },
+  sheetPrimaryBtnMuted: {
+    backgroundColor: "#3a332d",
   },
   noteEditorCard: {
     borderWidth: 1,
