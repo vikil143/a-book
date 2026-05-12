@@ -87,6 +87,7 @@ function SinglePagePdfView({
                 pdfRef={pdfRef}
                 pageNumber={pageNumber}
                 totalPages={totalPages}
+                singlePage
                 scrollEnabled={false}
                 horizontal={false}
                 enablePaging={false}

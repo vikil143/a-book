@@ -14,6 +14,7 @@ type Props = {
   pdfRef: React.RefObject<any>;
   pageNumber: number;
   totalPages?: number;
+  singlePage?: boolean;
   scrollEnabled: boolean;
   horizontal?: boolean;
   enablePaging?: boolean;
@@ -34,6 +35,7 @@ type PdfSurfaceProps = {
   source: { uri: string };
   pdfRef: React.RefObject<any>;
   pageNumber: number;
+  singlePage?: boolean;
   scrollEnabled: boolean;
   horizontal?: boolean;
   enablePaging?: boolean;
@@ -52,6 +54,7 @@ const PdfSurface = React.memo(function PdfSurfaceImpl({
   source,
   pdfRef,
   pageNumber,
+  singlePage = false,
   scrollEnabled,
   horizontal = false,
   enablePaging = false,
@@ -67,10 +70,12 @@ const PdfSurface = React.memo(function PdfSurfaceImpl({
 }: PdfSurfaceProps) {
   return (
     <Pdf
+      key={`${source.uri}::${pageNumber}::${singlePage ? "single" : "multi"}`}
       ref={pdfRef}
       source={source}
       style={styles.pdf}
       page={pageNumber}
+      singlePage={singlePage}
       scrollEnabled={scrollEnabled}
       horizontal={horizontal}
       enablePaging={enablePaging}
@@ -92,6 +97,7 @@ function PdfStageImpl({
   pdfRef,
   pageNumber,
   totalPages,
+  singlePage,
   scrollEnabled,
   horizontal,
   enablePaging,
@@ -137,6 +143,7 @@ function PdfStageImpl({
         source={source}
         pdfRef={pdfRef}
         pageNumber={pageNumber}
+        singlePage={singlePage}
         scrollEnabled={scrollEnabled}
         horizontal={horizontal}
         enablePaging={enablePaging}
